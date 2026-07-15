@@ -2,6 +2,8 @@ const docTypes = [
   ['quote','ใบเสนอราคา','QT','#24476f'], ['invoice','ใบแจ้งหนี้','INV','#17324d'], ['cash','บิลเงินสด','CS','#475569'], ['tax','ใบกำกับภาษี','TAX','#14532d'], ['delivery','ใบส่งของ','DN','#7c2d12'], ['receipt','ใบเสร็จรับเงิน','RC','#4c1d95'], ['purchase','ใบสั่งซื้อ','PO','#7f1d1d']
 ].map(([key,label,code,color]) => ({key,label,code,color}));
 const storageKey = 'billing-atelier-products';
+const companyStorageKey = 'billing-atelier-company-settings';
+const acceptedLogoTypes = ['image/png', 'image/jpeg', 'image/webp'];
 const defaultProducts = [
   { id: 1, sku: 'BRG-001', barcode: '8850001000011', name: 'กล่องของขวัญ Burgundy Signature', category: 'แพ็กเกจจิ้ง', unit: 'กล่อง', cost: 520, price: 890, qty: 48, min: 15 },
   { id: 2, sku: 'NAV-204', barcode: '8850001002046', name: 'สมุดแพ็กเกจ Blue Navy Premium', category: 'เครื่องเขียน', unit: 'เล่ม', cost: 250, price: 450, qty: 23, min: 20 },
@@ -21,12 +23,41 @@ let categoryFilter = 'all';
 let editingProductId = null;
 let productForm = createEmptyProduct();
 let productErrors = {};
+let companySettings = loadCompanySettings();
+let companyErrors = {};
 const money = new Intl.NumberFormat('th-TH', { style: 'currency', currency: 'THB' });
 const icon = (name) => `<span class="icon">${name}</span>`;
 const products = loadProducts();
 
 function createEmptyProduct() {
   return { sku: '', barcode: '', name: '', category: '', unit: '', cost: '', price: '', qty: '', min: '' };
+}
+
+function createDefaultCompanySettings() {
+  return {
+    logo: '',
+    logoName: '',
+    name: 'Billing Atelier Co., Ltd.',
+    branch: 'สำนักงานใหญ่',
+    taxId: '0105566999999',
+    registrationNumber: '',
+    address: '88 ถนนธุรกิจ แขวงสาทร',
+    province: 'กรุงเทพมหานคร',
+    district: 'สาทร',
+    subdistrict: 'ทุ่งมหาเมฆ',
+    postalCode: '10120',
+    phone: '02-000-2026',
+    email: 'hello@billing-atelier.example',
+    website: 'www.billing-atelier.example',
+    authorizedPerson: '',
+    footerText: 'ขอบคุณที่ไว้วางใจใช้บริการ',
+    paymentInstructions: 'กรุณาชำระเงินตามรายละเอียดบัญชีด้านล่าง และส่งหลักฐานการชำระเงินกลับมายังบริษัท',
+    bankName: '',
+    bankAccountName: '',
+    bankAccountNumber: '',
+    promptPayName: '',
+    promptPayNumber: '',
+  };
 }
 
 function escapeAttr(value) {
@@ -46,6 +77,65 @@ function normalizeProducts(records) {
     qty: Number(product.qty) || 0,
     min: Number(product.min) || 0,
   }));
+}
+
+function normalizeCompanySettings(settings) {
+  return { ...createDefaultCompanySettings(), ...(settings && typeof settings === 'object' ? settings : {}) };
+}
+
+function loadCompanySettings() {
+  try {
+    return normalizeCompanySettings(JSON.parse(localStorage.getItem(companyStorageKey) || 'null'));
+  } catch {
+    localStorage.removeItem(companyStorageKey);
+    return createDefaultCompanySettings();
+  }
+}
+
+function saveCompanySettings() {
+  localStorage.setItem(companyStorageKey, JSON.stringify(companySettings));
+}
+
+function updateCompanyField(field, value) {
+  companySettings = { ...companySettings, [field]: value };
+  companyErrors = { ...companyErrors, [field]: '' };
+  saveCompanySettings();
+}
+
+function deleteCompanyLogo() {
+  companySettings = { ...companySettings, logo: '', logoName: '' };
+  companyErrors.logo = '';
+  saveCompanySettings();
+}
+
+function handleLogoUpload(file) {
+  if (!file) return;
+  if (!acceptedLogoTypes.includes(file.type)) {
+    companyErrors.logo = 'กรุณาอัปโหลดไฟล์รูปภาพ PNG, JPG, JPEG หรือ WEBP เท่านั้น';
+    render();
+    return;
+  }
+  if (file.size > 2 * 1024 * 1024) {
+    companyErrors.logo = 'ขนาดไฟล์โลโก้ต้องไม่เกิน 2MB';
+    render();
+    return;
+  }
+  const reader = new FileReader();
+  reader.onload = () => {
+    companySettings = { ...companySettings, logo: String(reader.result || ''), logoName: file.name };
+    companyErrors.logo = '';
+    saveCompanySettings();
+    render();
+  };
+  reader.onerror = () => {
+    companyErrors.logo = 'ไม่สามารถอ่านไฟล์โลโก้ได้ กรุณาลองใหม่';
+    render();
+  };
+  reader.readAsDataURL(file);
+}
+
+function companyField(field, label, type = 'text') {
+  return `<label>${label}<input type="${type}" data-company-field="${field}" value="${escapeAttr(companySettings[field])}">${companyErrors[field] ? `<small class="error">${companyErrors[field]}</small>` : ''}</label>`;
 }
 
 function loadProducts() {
@@ -135,10 +225,32 @@ function render() {
     <section class="stats">${[['รายได้เดือนนี้', money.format(638420), '▰'], ['สินค้าทั้งหมด', `${products.length} รายการ`, '◫'], ['รอชำระ', money.format(127600), '฿'], ['สินค้าใกล้หมด', `${products.filter(p=>p.qty<=p.min).length} รายการ`, '□']].map(s => `<article>${icon(s[2])}<span>${s[0]}</span><strong>${s[1]}</strong></article>`).join('')}</section>
     <section class="workspace"><aside class="panel"><h2>ชนิดเอกสาร</h2>${docTypes.map(d => `<button class="doc ${selectedDoc.key===d.key?'active':''}" style="--doc:${d.color}" data-doc="${d.key}">${icon('▤')}<span>${d.label}</span><small>${d.code}</small></button>`).join('')}</aside>
       <section class="document-shell"><div class="toolbar"><div><span class="tag" style="background:${selectedDoc.color}">${selectedDoc.code}</span><h2>${selectedDoc.label}</h2></div><div><button data-print>${icon('⇩')} PDF</button><button data-print>${icon('⎙')} Print</button></div></div>
-      <div class="paper" style="--accent:${selectedDoc.color}"><header><div><h3>${selectedDoc.label}</h3><p>Billing Atelier Co., Ltd. · 88 ถนนธุรกิจ แขวงสาทร กรุงเทพฯ 10120</p><p>เลขประจำตัวผู้เสียภาษี 0105566999999 · โทร 02-000-2026</p></div><strong>${selectedDoc.code}-2026-0714-001</strong></header>
+      <div class="paper" style="--accent:${selectedDoc.color}"><header><div class="paper-company">${companySettings.logo ? `<img src="${escapeAttr(companySettings.logo)}" alt="โลโก้บริษัท" class="paper-logo">` : ''}<div><h3>${selectedDoc.label}</h3><p>${companySettings.name} · ${companySettings.address} ${companySettings.subdistrict} ${companySettings.district} ${companySettings.province} ${companySettings.postalCode}</p><p>เลขประจำตัวผู้เสียภาษี ${companySettings.taxId || '-'} · โทร ${companySettings.phone || '-'}</p></div></div><strong>${selectedDoc.code}-2026-0714-001</strong></header>
       <div class="form-grid"><label>ลูกค้า<input value="บริษัท ตัวอย่าง อินเตอร์เทรด จำกัด"></label><label>เลขผู้เสียภาษี<input value="0105566000000"></label><label>วันที่<input value="14/07/2026" readonly></label><label>ครบกำหนด<input value="28/07/2026" readonly></label></div>
       <table><thead><tr><th>รายการ</th><th>จำนวน</th><th>ราคา/หน่วย</th><th>รวม</th></tr></thead><tbody>${items.map((it,i)=>`<tr><td><input data-item="${i}" data-key="name" value="${it.name}"></td><td><input type="number" data-item="${i}" data-key="qty" value="${it.qty}"></td><td><input type="number" data-item="${i}" data-key="price" value="${it.price}"></td><td>${money.format(it.qty*it.price)}</td></tr>`).join('')}</tbody></table><button class="add" data-add>+ เพิ่มรายการ</button>
       <div class="totals"><p><span>มูลค่าสินค้า</span><b>${money.format(subtotal)}</b></p><p><span>VAT 7%</span><b>${money.format(vat)}</b></p><p class="grand"><span>ยอดสุทธิ</span><b>${money.format(total)}</b></p></div></div></section></section>
+
+    <section class="company-settings panel"><div class="section-title"><h2>${icon('◈')} ตั้งค่าบริษัท</h2><span>บันทึกอัตโนมัติในเครื่องนี้</span></div>
+      <div class="company-layout">
+        <div class="logo-card">
+          <div class="logo-preview">${companySettings.logo ? `<img src="${escapeAttr(companySettings.logo)}" alt="ตัวอย่างโลโก้บริษัท">` : `<span>${icon('▧')}</span><b>ยังไม่มีโลโก้</b>`}</div>
+          <div class="logo-actions">
+            <label class="upload-button">${companySettings.logo ? 'เปลี่ยนโลโก้' : 'อัปโหลดโลโก้'}<input type="file" accept="image/png,image/jpeg,image/jpg,image/webp" data-logo-upload></label>
+            <button type="button" class="danger ghost" data-delete-logo ${companySettings.logo ? '' : 'disabled'}>ลบโลโก้</button>
+          </div>
+          <small>${companySettings.logoName ? `ไฟล์: ${escapeAttr(companySettings.logoName)}` : 'รองรับ PNG, JPG, JPEG, WEBP ขนาดไม่เกิน 2MB'}</small>
+          ${companyErrors.logo ? `<small class="error">${companyErrors.logo}</small>` : ''}
+        </div>
+        <form class="company-form" data-company-form>
+          ${companyField('name', 'ชื่อบริษัท')}${companyField('branch', 'สาขา')}${companyField('taxId', 'เลขประจำตัวผู้เสียภาษี')}${companyField('registrationNumber', 'เลขทะเบียนบริษัท')}
+          ${companyField('address', 'ที่อยู่')}${companyField('province', 'จังหวัด')}${companyField('district', 'อำเภอ / เขต')}${companyField('subdistrict', 'ตำบล / แขวง')}${companyField('postalCode', 'รหัสไปรษณีย์')}
+          ${companyField('phone', 'โทรศัพท์')}${companyField('email', 'อีเมล', 'email')}${companyField('website', 'เว็บไซต์')}${companyField('authorizedPerson', 'ผู้มีอำนาจลงนาม')}
+          <label class="wide">ข้อความท้ายเอกสาร<textarea data-company-field="footerText">${escapeAttr(companySettings.footerText)}</textarea></label>
+          <label class="wide">คำแนะนำการชำระเงิน<textarea data-company-field="paymentInstructions">${escapeAttr(companySettings.paymentInstructions)}</textarea></label>
+          ${companyField('bankName', 'ธนาคาร')}${companyField('bankAccountName', 'ชื่อบัญชี')}${companyField('bankAccountNumber', 'เลขที่บัญชี')}${companyField('promptPayName', 'ชื่อพร้อมเพย์')}${companyField('promptPayNumber', 'หมายเลขพร้อมเพย์')}
+        </form>
+      </div>
+    </section>
     <section class="product-management panel"><div class="section-title"><h2>${icon('▦')} จัดการสินค้า</h2><span>${filtered.length} / ${products.length} รายการ</span></div>
       <form class="product-form" data-product-form>
         ${productField('sku', 'SKU')}${productField('barcode', 'Barcode')}${productField('name', 'ชื่อสินค้า')}${productField('category', 'หมวดหมู่')}${productField('unit', 'หน่วย')}${productField('cost', 'ต้นทุน', 'number')}${productField('price', 'ราคาขาย', 'number')}${productField('qty', 'สต็อกปัจจุบัน', 'number')}${productField('min', 'สต็อกขั้นต่ำ', 'number')}
@@ -160,6 +272,7 @@ function bindEvents() {
     if (target.closest('[data-print]')) window.print();
     if (target.closest('[data-add]')) items.push({ name: 'รายการใหม่', qty: 1, price: 0 });
     if (target.closest('[data-reset-product]')) resetProductForm();
+    if (target.closest('[data-delete-logo]')) deleteCompanyLogo();
     const edit = target.closest('[data-edit-product]');
     if (edit) {
       const product = products.find(p => p.id === Number(edit.dataset.editProduct));
@@ -200,9 +313,10 @@ function bindEvents() {
   });
 
   document.addEventListener('input', (e) => {
-    const target = e.target instanceof HTMLInputElement ? e.target : null;
+    const target = e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement ? e.target : null;
     if (!target) return;
     if (target.matches('[data-search]')) query = target.value;
+    if (target.matches('[data-company-field]')) updateCompanyField(target.dataset.companyField, target.value);
     if (target.matches('[data-product-field]')) {
       productForm[target.dataset.productField] = target.value;
       productErrors = {};
@@ -215,8 +329,9 @@ function bindEvents() {
   });
 
   document.addEventListener('change', (e) => {
-    const target = e.target instanceof HTMLSelectElement ? e.target : null;
+    const target = e.target instanceof HTMLSelectElement || e.target instanceof HTMLInputElement ? e.target : null;
     if (!target) return;
+    if (target.matches('[data-logo-upload]')) handleLogoUpload(target.files?.[0]);
     if (target.matches('[data-category-filter]')) {
       categoryFilter = target.value;
       render();
