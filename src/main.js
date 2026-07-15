@@ -18,6 +18,7 @@ const activity = [
   ['DN-2026-0711-005','ใบส่งของ','Burgundy Cafe',12150,'จัดส่งแล้ว','11 ก.ค. 2026'],
 ];
 let selectedDoc = docTypes[1];
+let documentForm = { customer: 'บริษัท ตัวอย่าง อินเตอร์เทรด จำกัด', taxId: '0105566000000', date: '2026-07-14', dueDate: '2026-07-28' };
 let items = [{ name: 'กล่องของขวัญ Burgundy Signature', qty: 8, price: 890 }, { name: 'เซ็ตการ์ด Rose Gold Foil', qty: 5, price: 1290 }];
 let query = '';
 let categoryFilter = 'all';
@@ -347,6 +348,22 @@ function productField(field, label, type = 'text') {
 }
 
 
+function updateDocumentTotals() {
+  const subtotal = items.reduce((sum, item) => sum + (Number(item.qty) || 0) * (Number(item.price) || 0), 0);
+  const vat = subtotal * 0.07;
+  const total = subtotal + vat;
+  document.querySelectorAll('[data-line-total]').forEach((cell) => {
+    const item = items[Number(cell.dataset.lineTotal)];
+    if (item) cell.textContent = money.format((Number(item.qty) || 0) * (Number(item.price) || 0));
+  });
+  const subtotalEl = document.querySelector('[data-subtotal]');
+  const vatEl = document.querySelector('[data-vat]');
+  const totalEl = document.querySelector('[data-total]');
+  if (subtotalEl) subtotalEl.textContent = money.format(subtotal);
+  if (vatEl) vatEl.textContent = money.format(vat);
+  if (totalEl) totalEl.textContent = money.format(total);
+}
+
 function renderPreservingInteraction() {
   const active = document.activeElement;
   const activeName = active instanceof HTMLElement ? active.getAttribute('data-search') !== null ? 'product-search' : active.getAttribute('data-customer-search') !== null ? 'customer-search' : '' : '';
@@ -392,9 +409,9 @@ function render() {
     <section class="workspace"><aside class="panel"><h2>ชนิดเอกสาร</h2>${docTypes.map(d => `<button class="doc ${selectedDoc.key===d.key?'active':''}" style="--doc:${d.color}" data-doc="${d.key}">${icon('▤')}<span>${d.label}</span><small>${d.code}</small></button>`).join('')}</aside>
       <section class="document-shell"><div class="toolbar"><div><span class="tag" style="background:${selectedDoc.color}">${selectedDoc.code}</span><h2>${selectedDoc.label}</h2></div><div><button data-print>${icon('⇩')} PDF</button><button data-print>${icon('⎙')} Print</button></div></div>
       <div class="paper" style="--accent:${selectedDoc.color}"><header><div class="paper-company">${companySettings.logo ? `<img src="${escapeAttr(companySettings.logo)}" alt="โลโก้บริษัท" class="paper-logo">` : ''}<div><h3>${selectedDoc.label}</h3><p>${companySettings.name} · ${companySettings.address} ${companySettings.subdistrict} ${companySettings.district} ${companySettings.province} ${companySettings.postalCode}</p><p>เลขประจำตัวผู้เสียภาษี ${companySettings.taxId || '-'} · โทร ${companySettings.phone || '-'}</p></div></div><strong>${selectedDoc.code}-2026-0714-001</strong></header>
-      <div class="form-grid"><label>ลูกค้า<input value="บริษัท ตัวอย่าง อินเตอร์เทรด จำกัด"></label><label>เลขผู้เสียภาษี<input value="0105566000000"></label><label>วันที่<input value="14/07/2026" readonly></label><label>ครบกำหนด<input value="28/07/2026" readonly></label></div>
-      <table><thead><tr><th>รายการ</th><th>จำนวน</th><th>ราคา/หน่วย</th><th>รวม</th></tr></thead><tbody>${items.map((it,i)=>`<tr><td><input data-item="${i}" data-key="name" value="${it.name}"></td><td><input type="number" data-item="${i}" data-key="qty" value="${it.qty}"></td><td><input type="number" data-item="${i}" data-key="price" value="${it.price}"></td><td>${money.format(it.qty*it.price)}</td></tr>`).join('')}</tbody></table><button class="add" data-add>+ เพิ่มรายการ</button>
-      <div class="totals"><p><span>มูลค่าสินค้า</span><b>${money.format(subtotal)}</b></p><p><span>VAT 7%</span><b>${money.format(vat)}</b></p><p class="grand"><span>ยอดสุทธิ</span><b>${money.format(total)}</b></p></div></div></section></section>
+      <div class="form-grid"><label>ลูกค้า<input data-document-field="customer" value="${escapeAttr(documentForm.customer)}"></label><label>เลขผู้เสียภาษี<input data-document-field="taxId" value="${escapeAttr(documentForm.taxId)}"></label><label>วันที่<input data-document-field="date" type="date" value="${escapeAttr(documentForm.date)}"></label><label>ครบกำหนด<input data-document-field="dueDate" type="date" value="${escapeAttr(documentForm.dueDate)}"></label></div>
+      <table><thead><tr><th>รายการ</th><th>จำนวน</th><th>ราคา/หน่วย</th><th>รวม</th></tr></thead><tbody>${items.map((it,i)=>`<tr><td><input data-item="${i}" data-key="name" value="${it.name}"></td><td><input type="number" data-item="${i}" data-key="qty" value="${it.qty}"></td><td><input type="number" data-item="${i}" data-key="price" value="${it.price}"></td><td data-line-total="${i}">${money.format(it.qty*it.price)}</td></tr>`).join('')}</tbody></table><button class="add" data-add>+ เพิ่มรายการ</button>
+      <div class="totals"><p><span>มูลค่าสินค้า</span><b data-subtotal>${money.format(subtotal)}</b></p><p><span>VAT 7%</span><b data-vat>${money.format(vat)}</b></p><p class="grand"><span>ยอดสุทธิ</span><b data-total>${money.format(total)}</b></p></div></div></section></section>
 
     <section class="company-settings panel" id="company"><div class="section-title"><h2>${icon('◈')} ตั้งค่าบริษัท</h2><span>บันทึกอัตโนมัติในเครื่องนี้</span></div>
       <div class="company-layout">
@@ -445,11 +462,30 @@ function bindEvents() {
     const target = e.target instanceof Element ? e.target : null;
     if (!target) return;
     const doc = target.closest('[data-doc]');
-    if (doc) selectedDoc = docTypes.find(d => d.key === doc.dataset.doc) || selectedDoc;
-    if (target.closest('[data-print]')) window.print();
-    if (target.closest('[data-add]')) items.push({ name: 'รายการใหม่', qty: 1, price: 0 });
-    if (target.closest('[data-reset-product]')) resetProductForm();
-    if (target.closest('[data-reset-customer]')) resetCustomerForm();
+    if (doc) {
+      selectedDoc = docTypes.find(d => d.key === doc.dataset.doc) || selectedDoc;
+      render();
+      return;
+    }
+    if (target.closest('[data-print]')) {
+      window.print();
+      return;
+    }
+    if (target.closest('[data-add]')) {
+      items.push({ name: 'รายการใหม่', qty: 1, price: 0 });
+      render();
+      return;
+    }
+    if (target.closest('[data-reset-product]')) {
+      resetProductForm();
+      render();
+      return;
+    }
+    if (target.closest('[data-reset-customer]')) {
+      resetCustomerForm();
+      render();
+      return;
+    }
     const companyForm = target.closest('[data-company-form]');
     if (target.closest('[data-save-company]') && companyForm) {
       saveCompanyForm(companyForm);
@@ -470,7 +506,11 @@ function bindEvents() {
     }
     if (companyForm) return;
     const viewCustomer = target.closest('[data-view-customer]');
-    if (viewCustomer) viewingCustomerId = Number(viewCustomer.dataset.viewCustomer);
+    if (viewCustomer) {
+      viewingCustomerId = Number(viewCustomer.dataset.viewCustomer);
+      render();
+      return;
+    }
     const editCustomer = target.closest('[data-edit-customer]');
     if (editCustomer) {
       const customer = customers.find(c => c.id === Number(editCustomer.dataset.editCustomer));
@@ -479,7 +519,9 @@ function bindEvents() {
         viewingCustomerId = customer.id;
         customerForm = { ...createEmptyCustomer(), ...customer };
         customerErrors = {};
+        render();
       }
+      return;
     }
     const removeCustomer = target.closest('[data-delete-customer]');
     if (removeCustomer && confirm('ลบลูกค้านี้ออกจากระบบ?')) {
@@ -488,7 +530,9 @@ function bindEvents() {
         customers.splice(index, 1);
         saveCustomers();
         resetCustomerForm();
+        render();
       }
+      return;
     }
     const edit = target.closest('[data-edit-product]');
     if (edit) {
@@ -507,7 +551,9 @@ function bindEvents() {
           min: String(product.min),
         };
         productErrors = {};
+        render();
       }
+      return;
     }
     const remove = target.closest('[data-delete-product]');
     if (remove && confirm('ลบสินค้านี้ออกจากระบบ?')) {
@@ -516,17 +562,19 @@ function bindEvents() {
         products.splice(index, 1);
         saveProducts();
         resetProductForm();
+        render();
       }
+      return;
     }
     const stock = target.closest('[data-stock]');
     if (stock) {
-      const p = products.find(x => x.id === Number(stock.dataset.stock));
-      if (p) {
-        p.qty = Math.max(0, p.qty + Number(stock.dataset.delta));
+      const product = products.find(x => x.id === Number(stock.dataset.stock));
+      if (product) {
+        product.qty = Math.max(0, product.qty + Number(stock.dataset.delta));
         saveProducts();
+        render();
       }
     }
-    render();
   });
 
   document.addEventListener('input', (e) => {
@@ -553,36 +601,54 @@ function bindEvents() {
     }
     if (target.matches('[data-product-field]')) {
       productForm[target.dataset.productField] = target.value;
-      productErrors = {};
+      productErrors = { ...productErrors, [target.dataset.productField]: '' };
+      return;
+    }
+    if (target.matches('[data-document-field]')) {
+      documentForm[target.dataset.documentField] = target.value;
       return;
     }
     if (target.matches('[data-item]')) {
-      const value = target.dataset.key === 'name' ? target.value : Number(target.value);
-      items[Number(target.dataset.item)][target.dataset.key] = value;
-      render();
+      const item = items[Number(target.dataset.item)];
+      if (!item) return;
+      item[target.dataset.key] = target.dataset.key === 'name' ? target.value : target.value;
+      updateDocumentTotals();
     }
   });
 
   document.addEventListener('change', (e) => {
     const target = e.target instanceof HTMLSelectElement || e.target instanceof HTMLInputElement ? e.target : null;
     if (!target) return;
-    if (target.matches('[data-logo-upload]')) handleLogoUpload(target.files?.[0]);
+    if (target.matches('[data-logo-upload]')) {
+      handleLogoUpload(target.files?.[0]);
+      return;
+    }
     if (target.matches('[data-category-filter]')) {
       categoryFilter = target.value;
       render();
+      return;
     }
     if (target.matches('[data-customer-type-filter]')) {
       customerTypeFilter = target.value;
       render();
+      return;
     }
     if (target.matches('[data-customer-field]')) {
       customerForm[target.dataset.customerField] = target.value;
+      return;
+    }
+    if (target.matches('[data-product-field]')) {
+      productForm[target.dataset.productField] = target.value;
+      return;
+    }
+    if (target.matches('[data-document-field]')) {
+      documentForm[target.dataset.documentField] = target.value;
     }
   });
 
   document.addEventListener('keydown', (e) => {
-    const target = e.target instanceof HTMLInputElement ? e.target : null;
-    if ((target?.closest('[data-company-form]') || target?.closest('[data-customer-form]')) && e.key === 'Enter') e.preventDefault();
+    const editable = e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement || e.target instanceof HTMLSelectElement;
+    if (editable && e.key === 'Enter' && !e.target.matches('textarea')) e.preventDefault();
   });
 
   document.addEventListener('submit', (e) => {
