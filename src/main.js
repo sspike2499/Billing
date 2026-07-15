@@ -1,5 +1,3 @@
-import './styles.css';
-
 const docTypes = [
   ['quote','ใบเสนอราคา','QT','#24476f'], ['invoice','ใบแจ้งหนี้','INV','#17324d'], ['cash','บิลเงินสด','CS','#475569'], ['tax','ใบกำกับภาษี','TAX','#14532d'], ['delivery','ใบส่งของ','DN','#7c2d12'], ['receipt','ใบเสร็จรับเงิน','RC','#4c1d95'], ['purchase','ใบสั่งซื้อ','PO','#7f1d1d']
 ].map(([key,label,code,color]) => ({key,label,code,color}));
@@ -22,11 +20,13 @@ const money = new Intl.NumberFormat('th-TH', { style: 'currency', currency: 'THB
 const icon = (name) => `<span class="icon">${name}</span>`;
 
 function render() {
+  const root = document.querySelector('#root');
+  if (!root) return;
   const subtotal = items.reduce((sum, item) => sum + item.qty * item.price, 0);
   const vat = subtotal * 0.07;
   const total = subtotal + vat;
   const filtered = products.filter(p => `${p.sku} ${p.name}`.toLowerCase().includes(query.toLowerCase()));
-  document.querySelector('#root').innerHTML = `<main>
+  root.innerHTML = `<main>
     <section class="hero"><nav><div class="brand">${icon('✦')} Billing Atelier</div><button data-print>${icon('⎙')} พิมพ์ / ส่งออก PDF</button></nav>
       <div class="hero-grid"><div><p class="eyebrow">Burgundy · Blue Navy · Rose Gold</p><h1>ระบบบิลและสต็อกสินค้า สำหรับธุรกิจไทยที่ดูอินเตอร์</h1><p>จัดการเอกสารขาย ซื้อ ส่งของ ภาษี รายรับ สต็อก และประวัติรายการย้อนหลังในหน้าเดียว พร้อมเอกสารโทนทางการที่อ่านง่ายเมื่อสั่งพิมพ์จริง</p></div><div class="glass-card">${icon('▣')}<strong>พร้อมใช้งาน</strong><span>ใบเสนอราคา ใบแจ้งหนี้ บิลเงินสด ใบกำกับภาษี ใบส่งของ ใบเสร็จรับเงิน และใบสั่งซื้อ</span></div></div></section>
     <section class="stats">${[['รายได้เดือนนี้', money.format(638420), '▰'], ['เอกสารทั้งหมด', '186 ฉบับ', '◫'], ['รอชำระ', money.format(127600), '฿'], ['สินค้าใกล้หมด', `${products.filter(p=>p.qty<=p.min).length} รายการ`, '□']].map(s => `<article>${icon(s[2])}<span>${s[0]}</span><strong>${s[1]}</strong></article>`).join('')}</section>
@@ -40,16 +40,41 @@ function render() {
     <article class="panel"><h2>${icon('◷')} ประวัติการทำรายการ</h2>${activity.map(a=>`<div class="activity">${icon('▸')}<div><strong>${a[0]}</strong><span>${a[1]} · ${a[2]}</span></div><b>${money.format(a[3])}</b><em>${a[4]}</em><small>${a[5]}</small></div>`).join('')}</article></section></main>`;
 }
 
-document.addEventListener('click', (e) => {
-  const doc = e.target.closest('[data-doc]'); if (doc) selectedDoc = docTypes.find(d => d.key === doc.dataset.doc);
-  if (e.target.closest('[data-print]')) window.print();
-  if (e.target.closest('[data-add]')) items.push({ name: 'รายการใหม่', qty: 1, price: 0 });
-  const stock = e.target.closest('[data-stock]'); if (stock) { const p = products.find(x => x.id === Number(stock.dataset.stock)); p.qty = Math.max(0, p.qty + Number(stock.dataset.delta)); }
+function bindEvents() {
+  document.addEventListener('click', (e) => {
+    const target = e.target instanceof Element ? e.target : null;
+    if (!target) return;
+    const doc = target.closest('[data-doc]');
+    if (doc) selectedDoc = docTypes.find(d => d.key === doc.dataset.doc) || selectedDoc;
+    if (target.closest('[data-print]')) window.print();
+    if (target.closest('[data-add]')) items.push({ name: 'รายการใหม่', qty: 1, price: 0 });
+    const stock = target.closest('[data-stock]');
+    if (stock) {
+      const p = products.find(x => x.id === Number(stock.dataset.stock));
+      if (p) p.qty = Math.max(0, p.qty + Number(stock.dataset.delta));
+    }
+    render();
+  });
+
+  document.addEventListener('input', (e) => {
+    const target = e.target instanceof HTMLInputElement ? e.target : null;
+    if (!target) return;
+    if (target.matches('[data-search]')) query = target.value;
+    if (target.matches('[data-item]')) {
+      const value = target.dataset.key === 'name' ? target.value : Number(target.value);
+      items[Number(target.dataset.item)][target.dataset.key] = value;
+    }
+    render();
+  });
+}
+
+function startApp() {
+  bindEvents();
   render();
-});
-document.addEventListener('input', (e) => {
-  if (e.target.matches('[data-search]')) query = e.target.value;
-  if (e.target.matches('[data-item]')) { const value = e.target.dataset.key === 'name' ? e.target.value : Number(e.target.value); items[Number(e.target.dataset.item)][e.target.dataset.key] = value; }
-  render();
-});
-render();
+}
+
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', startApp, { once: true });
+} else {
+  startApp();
+}

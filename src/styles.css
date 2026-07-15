@@ -69,3 +69,6 @@ meter { width: 100%; height: 10px; }
 .activity em { padding: 4px 10px; border-radius: 999px; background: #f3e8e3; color: var(--burgundy); font-style: normal; font-weight: 700; }
 @media (max-width: 980px) { .hero-grid, .workspace, .lower-grid { grid-template-columns: 1fr; } .stats { grid-template-columns: repeat(2, 1fr); } .form-grid { grid-template-columns: repeat(2, 1fr); } }
 @media print { body { background: white; } .hero, .stats, aside, .lower-grid, .toolbar button, .add { display: none !important; } .workspace { display: block; padding: 0; } .document-shell, .paper { box-shadow: none; border-radius: 0; margin: 0; } input { border: 0; padding: 0; } }
+
+.fallback { min-height: 100vh; }
+.fallback .hero { min-height: 100vh; border-radius: 0; display: grid; align-content: center; gap: 16px; }
