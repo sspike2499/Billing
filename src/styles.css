@@ -117,3 +117,22 @@ textarea { width: 100%; min-height: 86px; resize: vertical; border: 1px solid #d
 @media (max-width: 980px) { .company-layout { grid-template-columns: 1fr; } .company-form { grid-template-columns: repeat(2, 1fr); } }
 @media (max-width: 640px) { .company-form { grid-template-columns: 1fr; } .company-form .wide { grid-column: auto; } .paper header, .paper-company { flex-direction: column; } }
 @media print { .company-settings, .product-management, .customer-management { display: none !important; } }
+.doc-message { margin: 6px 0 0; color: var(--muted); font-weight: 700; }
+.toolbar .primary { color: white; background: linear-gradient(135deg, var(--burgundy), var(--navy)); }
+.toolbar .danger, .danger { background: #fee2e2; color: #991b1b; }
+.toolbar button:disabled { opacity: .45; cursor: not-allowed; }
+.document-manager { padding: 18px 22px 0; }
+.document-manager .inventory-tools { grid-template-columns: 1fr 180px 160px; margin-bottom: 12px; }
+.document-list { display: grid; gap: 10px; max-height: 260px; overflow: auto; padding-right: 4px; }
+.saved-doc { display: grid; grid-template-columns: 1fr auto; gap: 8px; align-items: stretch; padding: 10px; border: 1px solid var(--line); border-radius: 16px; background: #fff; }
+.saved-doc.active { border-color: var(--burgundy); box-shadow: 0 0 0 3px rgba(111,29,63,.12); }
+.saved-doc button { text-align: left; border-radius: 12px; padding: 10px 12px; background: #f8efec; color: var(--navy); font-weight: 800; }
+.saved-doc button:first-child { display: grid; gap: 3px; background: transparent; }
+.saved-doc span, .saved-doc small { color: var(--muted); font-weight: 600; }
+.document-empty { padding: 18px; border: 1px dashed var(--line); border-radius: 16px; background: #fffdf8; text-align: center; }
+.customer-snapshot { margin: -8px 0 18px; padding: 12px 14px; border-radius: 14px; background: #f7f3f1; color: var(--navy); }
+.document-text { grid-template-columns: repeat(3, 1fr); }
+.document-text .wide { grid-column: auto; }
+.edit-control button { padding: 8px 10px; border-radius: 10px; font-weight: 800; }
+@media (max-width: 980px) { .document-manager .inventory-tools, .document-text { grid-template-columns: 1fr; } }
+@media print { .document-manager, .edit-control, .toolbar, .doc-message { display: none !important; } select, textarea { border: 0; padding: 0; appearance: none; resize: none; } .form-grid { grid-template-columns: repeat(4, 1fr); } }
