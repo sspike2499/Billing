@@ -99,7 +99,33 @@ function saveCompanySettings() {
 function updateCompanyField(field, value) {
   companySettings = { ...companySettings, [field]: value };
   companyErrors = { ...companyErrors, [field]: '' };
+}
+
+function readCompanyForm(form) {
+  const nextSettings = { ...companySettings };
+  form.querySelectorAll('[data-company-field]').forEach((field) => {
+    nextSettings[field.dataset.companyField] = field.value;
+  });
+  companySettings = normalizeCompanySettings(nextSettings);
+}
+
+function saveCompanyForm(form) {
+  readCompanyForm(form);
   saveCompanySettings();
+  render();
+}
+
+function cancelCompanyChanges() {
+  companySettings = loadCompanySettings();
+  companyErrors = {};
+  render();
+}
+
+function resetCompanySettings() {
+  companySettings = createDefaultCompanySettings();
+  companyErrors = {};
+  saveCompanySettings();
+  render();
 }
 
 function deleteCompanyLogo() {
@@ -248,6 +274,7 @@ function render() {
           <label class="wide">ข้อความท้ายเอกสาร<textarea data-company-field="footerText">${escapeAttr(companySettings.footerText)}</textarea></label>
           <label class="wide">คำแนะนำการชำระเงิน<textarea data-company-field="paymentInstructions">${escapeAttr(companySettings.paymentInstructions)}</textarea></label>
           ${companyField('bankName', 'ธนาคาร')}${companyField('bankAccountName', 'ชื่อบัญชี')}${companyField('bankAccountNumber', 'เลขที่บัญชี')}${companyField('promptPayName', 'ชื่อพร้อมเพย์')}${companyField('promptPayNumber', 'หมายเลขพร้อมเพย์')}
+          <div class="company-actions"><button type="button" class="primary" data-save-company>บันทึกข้อมูลบริษัท</button><button type="button" data-cancel-company>ยกเลิก</button><button type="button" class="danger" data-reset-company>รีเซ็ต</button></div>
         </form>
       </div>
     </section>
@@ -272,7 +299,25 @@ function bindEvents() {
     if (target.closest('[data-print]')) window.print();
     if (target.closest('[data-add]')) items.push({ name: 'รายการใหม่', qty: 1, price: 0 });
     if (target.closest('[data-reset-product]')) resetProductForm();
-    if (target.closest('[data-delete-logo]')) deleteCompanyLogo();
+    const companyForm = target.closest('[data-company-form]');
+    if (target.closest('[data-save-company]') && companyForm) {
+      saveCompanyForm(companyForm);
+      return;
+    }
+    if (target.closest('[data-cancel-company]')) {
+      cancelCompanyChanges();
+      return;
+    }
+    if (target.closest('[data-reset-company]') && confirm('รีเซ็ตข้อมูลบริษัทเป็นค่าเริ่มต้น?')) {
+      resetCompanySettings();
+      return;
+    }
+    if (target.closest('[data-delete-logo]')) {
+      deleteCompanyLogo();
+      render();
+      return;
+    }
+    if (companyForm) return;
     const edit = target.closest('[data-edit-product]');
     if (edit) {
       const product = products.find(p => p.id === Number(edit.dataset.editProduct));
@@ -316,7 +361,10 @@ function bindEvents() {
     const target = e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement ? e.target : null;
     if (!target) return;
     if (target.matches('[data-search]')) query = target.value;
-    if (target.matches('[data-company-field]')) updateCompanyField(target.dataset.companyField, target.value);
+    if (target.matches('[data-company-field]')) {
+      updateCompanyField(target.dataset.companyField, target.value);
+      return;
+    }
     if (target.matches('[data-product-field]')) {
       productForm[target.dataset.productField] = target.value;
       productErrors = {};
@@ -338,9 +386,19 @@ function bindEvents() {
     }
   });
 
+  document.addEventListener('keydown', (e) => {
+    const target = e.target instanceof HTMLInputElement ? e.target : null;
+    if (target?.closest('[data-company-form]') && e.key === 'Enter') e.preventDefault();
+  });
+
   document.addEventListener('submit', (e) => {
     const form = e.target instanceof HTMLFormElement ? e.target : null;
-    if (!form || !form.matches('[data-product-form]')) return;
+    if (!form) return;
+    if (form.matches('[data-company-form]')) {
+      e.preventDefault();
+      return;
+    }
+    if (!form.matches('[data-product-form]')) return;
     e.preventDefault();
     submitProduct();
     render();
