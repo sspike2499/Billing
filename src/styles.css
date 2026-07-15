@@ -14,7 +14,7 @@
 }
 * { box-sizing: border-box; }
 body { margin: 0; }
-button, input, select { font: inherit; }
+button, input, select, textarea { font: inherit; }
 button { border: 0; cursor: pointer; }
 main { min-height: 100vh; background: radial-gradient(circle at 12% 0%, rgba(201,148,132,.35), transparent 28%), linear-gradient(135deg, #fff8f4 0%, #eef2f8 48%, #f7ece9 100%); }
 .hero { padding: 28px clamp(18px, 4vw, 56px) 54px; color: white; background: linear-gradient(130deg, var(--burgundy), var(--navy) 62%, #132f57); border-bottom-left-radius: 42px; border-bottom-right-radius: 42px; box-shadow: 0 25px 70px rgba(11,31,58,.24); }
@@ -64,9 +64,9 @@ td { border-bottom: 1px solid var(--line); padding: 10px; background: white; }
 .product-form { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 14px; padding: 18px; background: linear-gradient(135deg, #fff, #f8efec); border: 1px solid var(--line); border-radius: 22px; margin-bottom: 18px; }
 .product-form label { font-size: .92rem; }
 .error { color: #b91c1c; font-weight: 700; }
-.form-actions { display: flex; align-items: end; gap: 10px; }
-.form-actions button, .product-table button { padding: 10px 14px; border-radius: 12px; background: #f1e4df; color: var(--burgundy); font-weight: 800; }
-.form-actions .primary { color: white; background: linear-gradient(135deg, var(--burgundy), var(--navy)); }
+.form-actions, .company-actions { display: flex; align-items: end; gap: 10px; }
+.form-actions button, .company-actions button, .product-table button { padding: 10px 14px; border-radius: 12px; background: #f1e4df; color: var(--burgundy); font-weight: 800; }
+.form-actions .primary, .company-actions .primary { color: white; background: linear-gradient(135deg, var(--burgundy), var(--navy)); }
 .inventory-tools { display: grid; grid-template-columns: 1fr 240px; gap: 14px; align-items: end; margin-bottom: 14px; }
 .product-table { overflow-x: auto; }
 .product-table td:first-child { display: grid; gap: 4px; min-width: 220px; }
@@ -89,3 +89,26 @@ meter { width: 100%; height: 10px; }
 
 .fallback { min-height: 100vh; }
 .fallback .hero { min-height: 100vh; border-radius: 0; display: grid; align-content: center; gap: 16px; }
+
+.company-settings { max-width: 1440px; margin: 0 auto 24px; }
+.company-layout { display: grid; grid-template-columns: 300px 1fr; gap: 18px; align-items: start; }
+.logo-card { display: grid; gap: 12px; padding: 18px; border: 1px solid var(--line); border-radius: 22px; background: linear-gradient(135deg, #fff, #f8efec); }
+.logo-preview { min-height: 210px; display: grid; place-items: center; gap: 8px; text-align: center; border: 1px dashed #cdb9b0; border-radius: 18px; background: rgba(255,255,255,.74); color: var(--muted); overflow: hidden; }
+.logo-preview img { max-width: 100%; max-height: 190px; object-fit: contain; }
+.logo-preview .icon { color: var(--rose); font-size: 2rem; }
+.logo-actions { display: flex; gap: 10px; flex-wrap: wrap; }
+.upload-button, .ghost { display: inline-flex; align-items: center; justify-content: center; min-height: 42px; padding: 10px 14px; border-radius: 12px; background: linear-gradient(135deg, var(--burgundy), var(--navy)); color: white; font-weight: 800; cursor: pointer; }
+.upload-button input { position: absolute; inline-size: 1px; block-size: 1px; opacity: 0; pointer-events: none; }
+.ghost { background: #fee2e2; color: #991b1b; }
+.ghost:disabled { opacity: .45; cursor: not-allowed; }
+.company-form { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 14px; padding: 18px; border: 1px solid var(--line); border-radius: 22px; background: rgba(255,255,255,.72); }
+.company-form label { font-size: .92rem; }
+.company-form .wide { grid-column: span 2; }
+.company-actions { grid-column: 1 / -1; justify-content: flex-end; flex-wrap: wrap; }
+.company-actions .danger { background: #fee2e2; color: #991b1b; }
+textarea { width: 100%; min-height: 86px; resize: vertical; border: 1px solid #dccfc8; border-radius: 12px; padding: 10px 12px; background: #fff; color: var(--ink); }
+.paper-company { display: flex; gap: 14px; align-items: flex-start; }
+.paper-logo { width: 76px; height: 76px; object-fit: contain; border: 1px solid var(--line); border-radius: 14px; background: white; padding: 6px; }
+@media (max-width: 980px) { .company-layout { grid-template-columns: 1fr; } .company-form { grid-template-columns: repeat(2, 1fr); } }
+@media (max-width: 640px) { .company-form { grid-template-columns: 1fr; } .company-form .wide { grid-column: auto; } .paper header, .paper-company { flex-direction: column; } }
+@media print { .company-settings, .product-management { display: none !important; } }
