@@ -4,6 +4,119 @@ const docTypes = [
 const storageKey = 'billing-atelier-products';
 const companyStorageKey = 'billing-atelier-company-settings';
 const customerStorageKey = 'billing-atelier-customers';
+const documentStorageKey = 'billing-atelier-documents';
+const documentSchemaVersion = 1;
+const documentStatuses = [
+  ['draft', 'Draft'], ['sent', 'Sent'], ['approved', 'Approved'], ['waiting_payment', 'Waiting for payment'], ['partially_paid', 'Partially paid'], ['paid', 'Paid'], ['cancelled', 'Cancelled']
+];
+const defaultDocumentPrefixes = Object.fromEntries(docTypes.map(d => [d.key, d.code]));
+let documentStore = loadDocuments();
+let activeDocumentId = null;
+let documentQuery = '';
+let documentStatusFilter = 'all';
+let documentSort = 'newest';
+let documentMessage = '';
+let documentErrors = {};
+let isSavingDocument = false;
+
+function todayISO() { return new Date().toISOString().slice(0, 10); }
+function addDaysISO(days) { const date = new Date(); date.setDate(date.getDate() + days); return date.toISOString().slice(0, 10); }
+function createId(prefix = 'doc') { return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`; }
+function statusLabel(status) { return (documentStatuses.find(s => s[0] === status) || documentStatuses[0])[1]; }
+function getPrefix(type = selectedDoc.key) { return String(documentStore.prefixes?.[type] || defaultDocumentPrefixes[type] || type.toUpperCase()).trim() || defaultDocumentPrefixes[type] || 'DOC'; }
+function createEmptyDocumentForm(type = selectedDoc.key) {
+  return {
+    id: null, documentNumber: '', type, issueDate: todayISO(), dueDate: addDaysISO(14), customerId: '', customerSnapshot: null,
+    vatMode: 'excluded', vatRate: 7, withholdingTax: 0, notes: '', paymentTerms: '', footerText: '',
+    status: 'draft', createdAt: '', updatedAt: '', cancelledAt: '', companySnapshot: null,
+    items: [{ productId: '', description: '', quantity: 1, unit: '', unitPrice: 0, discount: 0 }]
+  };
+}
+function loadDocuments() {
+  const fallback = { schemaVersion: documentSchemaVersion, sequences: {}, prefixes: { ...defaultDocumentPrefixes }, records: [] };
+  try {
+    const raw = JSON.parse(localStorage.getItem(documentStorageKey) || 'null');
+    if (!raw) return fallback;
+    const sourceRecords = Array.isArray(raw) ? raw : Array.isArray(raw.records) ? raw.records : [];
+    const records = normalizeDocuments(sourceRecords);
+    const sequences = { ...(raw.sequences && typeof raw.sequences === 'object' ? raw.sequences : {}) };
+    records.forEach(doc => {
+      const match = String(doc.documentNumber || '').match(/-(\d+)$/);
+      if (match) sequences[doc.type] = Math.max(Number(sequences[doc.type]) || 0, Number(match[1]) || 0);
+    });
+    return { schemaVersion: documentSchemaVersion, sequences, prefixes: { ...defaultDocumentPrefixes, ...(raw.prefixes || {}) }, records };
+  } catch {
+    return fallback;
+  }
+}
+function normalizeDocuments(records) {
+  return records.filter(r => r && typeof r === 'object').map((r, index) => {
+    const type = docTypes.some(d => d.key === r.type) ? r.type : 'invoice';
+    const base = createEmptyDocumentForm(type);
+    return { ...base, ...r, id: String(r.id || createId('doc')), documentNumber: String(r.documentNumber || '').trim(), type,
+      customerId: r.customerId ? String(r.customerId) : '', customerSnapshot: r.customerSnapshot || null, companySnapshot: r.companySnapshot || null,
+      vatMode: ['none','included','excluded'].includes(r.vatMode) ? r.vatMode : 'excluded', vatRate: [0,7].includes(Number(r.vatRate)) ? Number(r.vatRate) : 7,
+      withholdingTax: Math.max(0, Number(r.withholdingTax) || 0), status: documentStatuses.some(s => s[0] === r.status) ? r.status : 'draft',
+      createdAt: r.createdAt || new Date(Date.now() - index).toISOString(), updatedAt: r.updatedAt || new Date(Date.now() - index).toISOString(),
+      items: Array.isArray(r.items) && r.items.length ? r.items.map(normalizeDocumentItem) : base.items };
+  });
+}
+function normalizeDocumentItem(item = {}) { return { productId: item.productId ? String(item.productId) : '', description: String(item.description || ''), quantity: Math.max(0, Number(item.quantity) || 0), unit: String(item.unit || ''), unitPrice: Math.max(0, Number(item.unitPrice) || 0), discount: Math.max(0, Number(item.discount) || 0) }; }
+function saveDocumentStore() { localStorage.setItem(documentStorageKey, JSON.stringify(documentStore)); }
+function snapshotCompany() { return normalizeCompanySettings(companySettings); }
+function snapshotCustomer(customer) { return customer ? { ...createEmptyCustomer(), ...customer } : null; }
+function documentTotals(doc = documentForm) {
+  const subtotal = doc.items.reduce((sum, item) => sum + Math.max(0, Number(item.quantity)||0) * Math.max(0, Number(item.unitPrice)||0), 0);
+  const discount = doc.items.reduce((sum, item) => sum + Math.max(0, Number(item.discount)||0), 0);
+  const afterDiscount = Math.max(0, subtotal - discount);
+  const rate = Number(doc.vatRate) || 0;
+  const vat = doc.vatMode === 'none' ? 0 : doc.vatMode === 'included' ? afterDiscount - (afterDiscount / (1 + rate / 100)) : afterDiscount * rate / 100;
+  const withholding = Math.max(0, Number(doc.withholdingTax) || 0);
+  const grandTotal = doc.vatMode === 'excluded' ? afterDiscount + vat - withholding : afterDiscount - withholding;
+  return { subtotal, discount, vat, withholding, grandTotal };
+}
+function nextDocumentNumber(type) {
+  const next = (Number(documentStore.sequences[type]) || 0) + 1;
+  return `${getPrefix(type)}-${new Date().getFullYear()}-${String(next).padStart(4, '0')}`;
+}
+function validateDocument() {
+  const errors = {};
+  if (!documentForm.customerId) errors.customerId = 'กรุณาเลือกลูกค้าจากระบบจัดการลูกค้า';
+  if (!documentForm.issueDate) errors.issueDate = 'กรุณาระบุวันที่ออกเอกสาร';
+  if (!documentForm.dueDate) errors.dueDate = 'กรุณาระบุวันครบกำหนด';
+  const validItems = documentForm.items.filter(i => String(i.description || '').trim());
+  if (!validItems.length) errors.items = 'กรุณาเพิ่มรายการสินค้าอย่างน้อย 1 รายการ';
+  documentForm.items.forEach((item, index) => { if (String(item.description || '').trim() && Number(item.quantity) <= 0) errors[`item-${index}`] = 'จำนวนต้องมากกว่า 0'; });
+  return errors;
+}
+function saveDocument() {
+  if (isSavingDocument) return;
+  isSavingDocument = true;
+  documentErrors = validateDocument();
+  if (Object.keys(documentErrors).length) { documentMessage = 'กรุณาตรวจสอบข้อมูลเอกสาร'; isSavingDocument = false; render(); return; }
+  const now = new Date().toISOString();
+  const type = documentForm.type;
+  const existingIndex = documentStore.records.findIndex(d => d.id === documentForm.id);
+  const customer = customers.find(c => String(c.id) === String(documentForm.customerId));
+  let doc = { ...documentForm, items: documentForm.items.map(normalizeDocumentItem), updatedAt: now, customerSnapshot: snapshotCustomer(customer) || documentForm.customerSnapshot, companySnapshot: documentForm.companySnapshot || snapshotCompany() };
+  if (existingIndex < 0) {
+    const number = nextDocumentNumber(type);
+    if (documentStore.records.some(d => d.documentNumber === number)) { documentErrors.documentNumber = 'เลขเอกสารซ้ำ กรุณาลองบันทึกอีกครั้ง'; documentMessage = documentErrors.documentNumber; isSavingDocument = false; render(); return; }
+    documentStore.sequences[type] = (Number(documentStore.sequences[type]) || 0) + 1;
+    doc = { ...doc, id: createId('doc'), documentNumber: number, createdAt: now, companySnapshot: snapshotCompany() };
+    documentStore.records.unshift(doc);
+  } else {
+    documentStore.records[existingIndex] = doc;
+  }
+  activeDocumentId = doc.id; documentForm = { ...doc, items: doc.items.map(i => ({ ...i })) };
+  saveDocumentStore(); documentMessage = 'บันทึกเอกสารเรียบร้อยแล้ว'; isSavingDocument = false; render();
+}
+function openDocument(id) { const doc = documentStore.records.find(d => d.id === id); if (!doc) return; activeDocumentId = id; selectedDoc = docTypes.find(d => d.key === doc.type) || selectedDoc; documentForm = { ...doc, items: doc.items.map(i => ({ ...i })) }; documentErrors = {}; documentMessage = 'เปิดเอกสารที่บันทึกไว้แล้ว'; render(); }
+function newDocument(type = selectedDoc.key) { activeDocumentId = null; documentForm = createEmptyDocumentForm(type); documentErrors = {}; documentMessage = 'สร้างเอกสารใหม่แล้ว กรุณาบันทึกเพื่อรับเลขเอกสาร'; render(); }
+function duplicateDocument(id) { const doc = documentStore.records.find(d => d.id === id); if (!doc) return; selectedDoc = docTypes.find(d => d.key === doc.type) || selectedDoc; documentForm = { ...doc, id: null, documentNumber: '', status: 'draft', createdAt: '', updatedAt: '', cancelledAt: '', items: doc.items.map(i => ({ ...i })) }; activeDocumentId = null; documentMessage = 'คัดลอกเอกสารแล้ว กรุณาบันทึกเพื่อออกเลขใหม่'; render(); }
+function cancelDocument(id = activeDocumentId) { const index = documentStore.records.findIndex(d => d.id === id); if (index < 0) return; documentStore.records[index] = { ...documentStore.records[index], status: 'cancelled', cancelledAt: new Date().toISOString(), updatedAt: new Date().toISOString() }; saveDocumentStore(); openDocument(id); documentMessage = 'ยกเลิกเอกสารแล้ว โดยยังเก็บประวัติไว้'; }
+function filteredDocuments() { const q = documentQuery.toLowerCase(); return [...documentStore.records].filter(d => { const customer = d.customerSnapshot?.name || ''; const hay = `${d.documentNumber} ${customer} ${d.type} ${d.issueDate}`.toLowerCase(); return hay.includes(q) && (documentStatusFilter === 'all' || d.status === documentStatusFilter); }).sort((a,b) => documentSort === 'newest' ? String(b.createdAt).localeCompare(String(a.createdAt)) : String(a.createdAt).localeCompare(String(b.createdAt))); }
+
 const acceptedLogoTypes = ['image/png', 'image/jpeg', 'image/webp'];
 const defaultProducts = [
   { id: 1, sku: 'BRG-001', barcode: '8850001000011', name: 'กล่องของขวัญ Burgundy Signature', category: 'แพ็กเกจจิ้ง', unit: 'กล่อง', cost: 520, price: 890, qty: 48, min: 15 },
@@ -18,8 +131,7 @@ const activity = [
   ['DN-2026-0711-005','ใบส่งของ','Burgundy Cafe',12150,'จัดส่งแล้ว','11 ก.ค. 2026'],
 ];
 let selectedDoc = docTypes[1];
-let documentForm = { customer: 'บริษัท ตัวอย่าง อินเตอร์เทรด จำกัด', taxId: '0105566000000', date: '2026-07-14', dueDate: '2026-07-28' };
-let items = [{ name: 'กล่องของขวัญ Burgundy Signature', qty: 8, price: 890 }, { name: 'เซ็ตการ์ด Rose Gold Foil', qty: 5, price: 1290 }];
+let documentForm = createEmptyDocumentForm(selectedDoc.key);
 let query = '';
 let categoryFilter = 'all';
 let editingProductId = null;
@@ -349,30 +461,28 @@ function productField(field, label, type = 'text') {
 
 
 function updateDocumentTotals() {
-  const subtotal = items.reduce((sum, item) => sum + (Number(item.qty) || 0) * (Number(item.price) || 0), 0);
-  const vat = subtotal * 0.07;
-  const total = subtotal + vat;
+  const totals = documentTotals();
   document.querySelectorAll('[data-line-total]').forEach((cell) => {
-    const item = items[Number(cell.dataset.lineTotal)];
-    if (item) cell.textContent = money.format((Number(item.qty) || 0) * (Number(item.price) || 0));
+    const item = documentForm.items[Number(cell.dataset.lineTotal)];
+    if (item) cell.textContent = money.format(Math.max(0, (Number(item.quantity) || 0) * (Number(item.unitPrice) || 0) - (Number(item.discount) || 0)));
   });
-  const subtotalEl = document.querySelector('[data-subtotal]');
-  const vatEl = document.querySelector('[data-vat]');
-  const totalEl = document.querySelector('[data-total]');
-  if (subtotalEl) subtotalEl.textContent = money.format(subtotal);
-  if (vatEl) vatEl.textContent = money.format(vat);
-  if (totalEl) totalEl.textContent = money.format(total);
+  const pairs = { '[data-subtotal]': totals.subtotal, '[data-discount]': totals.discount, '[data-vat]': totals.vat, '[data-withholding]': totals.withholding, '[data-total]': totals.grandTotal };
+  Object.entries(pairs).forEach(([selector, value]) => {
+    const el = document.querySelector(selector);
+    if (el) el.textContent = money.format(value);
+  });
 }
+
 
 function renderPreservingInteraction() {
   const active = document.activeElement;
-  const activeName = active instanceof HTMLElement ? active.getAttribute('data-search') !== null ? 'product-search' : active.getAttribute('data-customer-search') !== null ? 'customer-search' : '' : '';
+  const activeName = active instanceof HTMLElement ? active.getAttribute('data-search') !== null ? 'product-search' : active.getAttribute('data-customer-search') !== null ? 'customer-search' : active.getAttribute('data-document-search') !== null ? 'document-search' : '' : '';
   const selectionStart = active instanceof HTMLInputElement ? active.selectionStart : null;
   const selectionEnd = active instanceof HTMLInputElement ? active.selectionEnd : null;
   const scrollX = window.scrollX;
   const scrollY = window.scrollY;
   render();
-  const next = activeName === 'product-search' ? document.querySelector('[data-search]') : activeName === 'customer-search' ? document.querySelector('[data-customer-search]') : null;
+  const next = activeName === 'product-search' ? document.querySelector('[data-search]') : activeName === 'customer-search' ? document.querySelector('[data-customer-search]') : activeName === 'document-search' ? document.querySelector('[data-document-search]') : null;
   if (next instanceof HTMLInputElement) {
     next.focus({ preventScroll: true });
     if (selectionStart !== null && selectionEnd !== null) next.setSelectionRange(selectionStart, selectionEnd);
@@ -388,9 +498,6 @@ function scheduleRender() {
 function render() {
   const root = document.querySelector('#root');
   if (!root) return;
-  const subtotal = items.reduce((sum, item) => sum + item.qty * item.price, 0);
-  const vat = subtotal * 0.07;
-  const total = subtotal + vat;
   const categories = [...new Set(products.map(p => p.category).filter(Boolean))];
   const filtered = products.filter(p => {
     const haystack = `${p.sku} ${p.barcode} ${p.name} ${p.category}`.toLowerCase();
@@ -406,12 +513,16 @@ function render() {
     <section class="hero"><nav><div class="brand">${icon('✦')} Billing Atelier</div><div class="nav-actions"><a href="#customers">ลูกค้า</a><a href="#products">สินค้า</a><a href="#company">ตั้งค่าบริษัท</a><button data-print>${icon('⎙')} พิมพ์ / ส่งออก PDF</button></div></nav>
       <div class="hero-grid"><div><p class="eyebrow">Burgundy · Blue Navy · Rose Gold</p><h1>ระบบบิลและสต็อกสินค้า สำหรับธุรกิจไทยที่ดูอินเตอร์</h1><p>จัดการเอกสารขาย ซื้อ ส่งของ ภาษี รายรับ สต็อก และประวัติรายการย้อนหลังในหน้าเดียว พร้อมเอกสารโทนทางการที่อ่านง่ายเมื่อสั่งพิมพ์จริง</p></div><div class="glass-card">${icon('▣')}<strong>พร้อมใช้งาน</strong><span>ใบเสนอราคา ใบแจ้งหนี้ บิลเงินสด ใบกำกับภาษี ใบส่งของ ใบเสร็จรับเงิน และใบสั่งซื้อ</span></div></div></section>
     <section class="stats">${[['รายได้เดือนนี้', money.format(638420), '▰'], ['สินค้าทั้งหมด', `${products.length} รายการ`, '◫'], ['รอชำระ', money.format(127600), '฿'], ['สินค้าใกล้หมด', `${products.filter(p=>p.qty<=p.min).length} รายการ`, '□']].map(s => `<article>${icon(s[2])}<span>${s[0]}</span><strong>${s[1]}</strong></article>`).join('')}</section>
-    <section class="workspace"><aside class="panel"><h2>ชนิดเอกสาร</h2>${docTypes.map(d => `<button class="doc ${selectedDoc.key===d.key?'active':''}" style="--doc:${d.color}" data-doc="${d.key}">${icon('▤')}<span>${d.label}</span><small>${d.code}</small></button>`).join('')}</aside>
-      <section class="document-shell"><div class="toolbar"><div><span class="tag" style="background:${selectedDoc.color}">${selectedDoc.code}</span><h2>${selectedDoc.label}</h2></div><div><button data-print>${icon('⇩')} PDF</button><button data-print>${icon('⎙')} Print</button></div></div>
-      <div class="paper" style="--accent:${selectedDoc.color}"><header><div class="paper-company">${companySettings.logo ? `<img src="${escapeAttr(companySettings.logo)}" alt="โลโก้บริษัท" class="paper-logo">` : ''}<div><h3>${selectedDoc.label}</h3><p>${companySettings.name} · ${companySettings.address} ${companySettings.subdistrict} ${companySettings.district} ${companySettings.province} ${companySettings.postalCode}</p><p>เลขประจำตัวผู้เสียภาษี ${companySettings.taxId || '-'} · โทร ${companySettings.phone || '-'}</p></div></div><strong>${selectedDoc.code}-2026-0714-001</strong></header>
-      <div class="form-grid"><label>ลูกค้า<input data-document-field="customer" value="${escapeAttr(documentForm.customer)}"></label><label>เลขผู้เสียภาษี<input data-document-field="taxId" value="${escapeAttr(documentForm.taxId)}"></label><label>วันที่<input data-document-field="date" type="date" value="${escapeAttr(documentForm.date)}"></label><label>ครบกำหนด<input data-document-field="dueDate" type="date" value="${escapeAttr(documentForm.dueDate)}"></label></div>
-      <table><thead><tr><th>รายการ</th><th>จำนวน</th><th>ราคา/หน่วย</th><th>รวม</th></tr></thead><tbody>${items.map((it,i)=>`<tr><td><input data-item="${i}" data-key="name" value="${it.name}"></td><td><input type="number" data-item="${i}" data-key="qty" value="${it.qty}"></td><td><input type="number" data-item="${i}" data-key="price" value="${it.price}"></td><td data-line-total="${i}">${money.format(it.qty*it.price)}</td></tr>`).join('')}</tbody></table><button class="add" data-add>+ เพิ่มรายการ</button>
-      <div class="totals"><p><span>มูลค่าสินค้า</span><b data-subtotal>${money.format(subtotal)}</b></p><p><span>VAT 7%</span><b data-vat>${money.format(vat)}</b></p><p class="grand"><span>ยอดสุทธิ</span><b data-total>${money.format(total)}</b></p></div></div></section></section>
+    <section class="workspace"><aside class="panel"><h2>ชนิดเอกสาร</h2>${docTypes.map(d => `<button class="doc ${selectedDoc.key===d.key?'active':''}" style="--doc:${d.color}" data-doc="${d.key}">${icon('▤')}<span>${d.label}</span><small>${getPrefix(d.key)}</small></button>`).join('')}</aside>
+      <section class="document-shell"><div class="toolbar"><div><span class="tag" style="background:${selectedDoc.color}">${getPrefix(selectedDoc.key)}</span><h2>${selectedDoc.label}</h2><p class="doc-message">${escapeAttr(documentMessage || 'เอกสารใหม่จะได้รับเลขเมื่อบันทึกครั้งแรก')}</p></div><div><button type="button" data-new-document>${icon('+')} ใหม่</button><button type="button" class="primary" data-save-document ${isSavingDocument ? 'disabled' : ''}>${icon('✓')} บันทึก Draft</button><button type="button" data-duplicate-active ${activeDocumentId ? '' : 'disabled'}>${icon('⧉')} Duplicate</button><button type="button" class="danger" data-cancel-document ${activeDocumentId && documentForm.status !== 'cancelled' ? '' : 'disabled'}>${icon('×')} Cancel</button><button type="button" data-print>${icon('⎙')} Print/PDF</button></div></div>
+      <div class="document-manager"><div class="inventory-tools"><div class="search">${icon('⌕')}<input placeholder="ค้นหาเลขเอกสาร ลูกค้า ประเภท หรือวันที่" value="${escapeAttr(documentQuery)}" data-document-search></div><label>สถานะ<select data-document-status-filter><option value="all">ทั้งหมด</option>${documentStatuses.map(([key,label])=>`<option value="${key}" ${documentStatusFilter===key?'selected':''}>${label}</option>`).join('')}</select></label><label>เรียง<select data-document-sort><option value="newest" ${documentSort==='newest'?'selected':''}>ใหม่สุด</option><option value="oldest" ${documentSort==='oldest'?'selected':''}>เก่าสุด</option></select></label></div>
+      <div class="document-list">${filteredDocuments().map(d=>`<article class="saved-doc ${d.id===activeDocumentId?'active':''}"><button type="button" data-open-document="${d.id}"><strong>${escapeAttr(d.documentNumber)}</strong><span>${escapeAttr(docTypes.find(t=>t.key===d.type)?.label || d.type)} · ${escapeAttr(d.customerSnapshot?.name || '-')}</span><small>${escapeAttr(d.issueDate)} · ${statusLabel(d.status)} · ${money.format(documentTotals(d).grandTotal)}</small></button><button type="button" data-duplicate-document="${d.id}">คัดลอก</button></article>`).join('') || '<p class="empty document-empty">ยังไม่มีเอกสารที่บันทึกไว้</p>'}</div></div>
+      <div class="paper" style="--accent:${selectedDoc.color}"><header><div class="paper-company">${(documentForm.companySnapshot?.logo || companySettings.logo) ? `<img src="${escapeAttr(documentForm.companySnapshot?.logo || companySettings.logo)}" alt="โลโก้บริษัท" class="paper-logo">` : ''}<div><h3>${selectedDoc.label}</h3><p>${escapeAttr((documentForm.companySnapshot?.name || companySettings.name))} · ${escapeAttr(documentForm.companySnapshot?.address || companySettings.address)} ${escapeAttr(documentForm.companySnapshot?.subdistrict || companySettings.subdistrict)} ${escapeAttr(documentForm.companySnapshot?.district || companySettings.district)} ${escapeAttr(documentForm.companySnapshot?.province || companySettings.province)} ${escapeAttr(documentForm.companySnapshot?.postalCode || companySettings.postalCode)}</p><p>เลขประจำตัวผู้เสียภาษี ${escapeAttr(documentForm.companySnapshot?.taxId || companySettings.taxId || '-')} · โทร ${escapeAttr(documentForm.companySnapshot?.phone || companySettings.phone || '-')}</p></div></div><strong>${escapeAttr(documentForm.documentNumber || 'ยังไม่ออกเลข')}</strong></header>
+      <div class="form-grid"><label>Prefix<input data-prefix-field="${selectedDoc.key}" value="${escapeAttr(getPrefix(selectedDoc.key))}"></label><label>ลูกค้า<select data-document-field="customerId"><option value="">เลือกลูกค้า</option>${customers.map(c=>`<option value="${c.id}" ${String(documentForm.customerId)===String(c.id)?'selected':''}>${escapeAttr(c.name)} (${escapeAttr(c.code)})</option>`).join('')}</select>${documentErrors.customerId ? `<small class="error">${documentErrors.customerId}</small>` : ''}</label><label>วันที่ออก<input data-document-field="issueDate" type="date" value="${escapeAttr(documentForm.issueDate)}">${documentErrors.issueDate ? `<small class="error">${documentErrors.issueDate}</small>` : ''}</label><label>ครบกำหนด<input data-document-field="dueDate" type="date" value="${escapeAttr(documentForm.dueDate)}">${documentErrors.dueDate ? `<small class="error">${documentErrors.dueDate}</small>` : ''}</label><label>สถานะ<select data-document-field="status">${documentStatuses.map(([key,label])=>`<option value="${key}" ${documentForm.status===key?'selected':''}>${label}</option>`).join('')}</select></label><label>VAT<select data-document-field="vatMode"><option value="none" ${documentForm.vatMode==='none'?'selected':''}>ไม่มี VAT</option><option value="included" ${documentForm.vatMode==='included'?'selected':''}>รวม VAT แล้ว</option><option value="excluded" ${documentForm.vatMode==='excluded'?'selected':''}>ยังไม่รวม VAT</option></select></label><label>อัตรา VAT<select data-document-field="vatRate"><option value="0" ${Number(documentForm.vatRate)===0?'selected':''}>0%</option><option value="7" ${Number(documentForm.vatRate)===7?'selected':''}>7%</option></select></label><label>หัก ณ ที่จ่าย<input type="number" min="0" step="0.01" data-document-field="withholdingTax" value="${escapeAttr(documentForm.withholdingTax)}"></label></div>
+      <div class="customer-snapshot"><b>ข้อมูลลูกค้าที่บันทึกในเอกสาร:</b> ${escapeAttr(documentForm.customerSnapshot?.name || customers.find(c=>String(c.id)===String(documentForm.customerId))?.name || '-')} · Tax ID ${escapeAttr(documentForm.customerSnapshot?.taxId || customers.find(c=>String(c.id)===String(documentForm.customerId))?.taxId || '-')}</div>
+      <table><thead><tr><th>สินค้า</th><th>รายละเอียด</th><th>จำนวน</th><th>หน่วย</th><th>ราคา/หน่วย</th><th>ส่วนลด</th><th>รวม</th><th class="edit-control"></th></tr></thead><tbody>${documentForm.items.map((it,i)=>`<tr><td><select data-item="${i}" data-key="productId"><option value="">เลือกรายการ</option>${products.map(p=>`<option value="${p.id}" ${String(it.productId)===String(p.id)?'selected':''}>${escapeAttr(p.name)}</option>`).join('')}</select></td><td><input data-item="${i}" data-key="description" value="${escapeAttr(it.description)}">${documentErrors[`item-${i}`] ? `<small class="error">${documentErrors[`item-${i}`]}</small>` : ''}</td><td><input type="number" min="0" step="0.01" data-item="${i}" data-key="quantity" value="${escapeAttr(it.quantity)}"></td><td><input data-item="${i}" data-key="unit" value="${escapeAttr(it.unit)}"></td><td><input type="number" min="0" step="0.01" data-item="${i}" data-key="unitPrice" value="${escapeAttr(it.unitPrice)}"></td><td><input type="number" min="0" step="0.01" data-item="${i}" data-key="discount" value="${escapeAttr(it.discount)}"></td><td data-line-total="${i}">${money.format(Math.max(0,(Number(it.quantity)||0)*(Number(it.unitPrice)||0)-(Number(it.discount)||0)))}</td><td class="edit-control"><button type="button" class="danger" data-remove-item="${i}">ลบ</button></td></tr>`).join('')}</tbody></table>${documentErrors.items ? `<small class="error">${documentErrors.items}</small>` : ''}<button type="button" class="add" data-add>+ เพิ่มรายการ</button>
+      <div class="form-grid document-text"><label class="wide">หมายเหตุ<textarea data-document-field="notes">${escapeAttr(documentForm.notes)}</textarea></label><label class="wide">เงื่อนไขการชำระเงิน<textarea data-document-field="paymentTerms">${escapeAttr(documentForm.paymentTerms)}</textarea></label><label class="wide">ข้อความท้ายเอกสาร<textarea data-document-field="footerText">${escapeAttr(documentForm.footerText)}</textarea></label></div>
+      <div class="totals"><p><span>มูลค่าสินค้า</span><b data-subtotal>${money.format(documentTotals().subtotal)}</b></p><p><span>ส่วนลด</span><b data-discount>${money.format(documentTotals().discount)}</b></p><p><span>VAT</span><b data-vat>${money.format(documentTotals().vat)}</b></p><p><span>หัก ณ ที่จ่าย</span><b data-withholding>${money.format(documentTotals().withholding)}</b></p><p class="grand"><span>ยอดสุทธิ</span><b data-total>${money.format(documentTotals().grandTotal)}</b></p></div></div></section></section>
 
     <section class="company-settings panel" id="company"><div class="section-title"><h2>${icon('◈')} ตั้งค่าบริษัท</h2><span>บันทึกอัตโนมัติในเครื่องนี้</span></div>
       <div class="company-layout">
@@ -464,15 +575,26 @@ function bindEvents() {
     const doc = target.closest('[data-doc]');
     if (doc) {
       selectedDoc = docTypes.find(d => d.key === doc.dataset.doc) || selectedDoc;
+      if (!activeDocumentId && !documentForm.documentNumber) documentForm.type = selectedDoc.key;
       render();
       return;
     }
+    if (target.closest('[data-new-document]')) { newDocument(selectedDoc.key); return; }
+    if (target.closest('[data-save-document]')) { saveDocument(); return; }
+    if (target.closest('[data-duplicate-active]')) { duplicateDocument(activeDocumentId); return; }
+    if (target.closest('[data-cancel-document]') && confirm('ยกเลิกเอกสารนี้โดยเก็บประวัติไว้?')) { cancelDocument(activeDocumentId); return; }
+    const openDoc = target.closest('[data-open-document]');
+    if (openDoc) { openDocument(openDoc.dataset.openDocument); return; }
+    const dupDoc = target.closest('[data-duplicate-document]');
+    if (dupDoc) { duplicateDocument(dupDoc.dataset.duplicateDocument); return; }
+    const removeItem = target.closest('[data-remove-item]');
+    if (removeItem) { documentForm.items.splice(Number(removeItem.dataset.removeItem), 1); if (!documentForm.items.length) documentForm.items.push(normalizeDocumentItem()); render(); return; }
     if (target.closest('[data-print]')) {
       window.print();
       return;
     }
     if (target.closest('[data-add]')) {
-      items.push({ name: 'รายการใหม่', qty: 1, price: 0 });
+      documentForm.items.push({ productId: '', description: '', quantity: 1, unit: '', unitPrice: 0, discount: 0 });
       render();
       return;
     }
@@ -590,6 +712,16 @@ function bindEvents() {
       scheduleRender();
       return;
     }
+    if (target.matches('[data-document-search]')) {
+      documentQuery = target.value;
+      scheduleRender();
+      return;
+    }
+    if (target.matches('[data-prefix-field]')) {
+      documentStore.prefixes[target.dataset.prefixField] = target.value.trim().toUpperCase();
+      saveDocumentStore();
+      return;
+    }
     if (target.matches('[data-company-field]')) {
       updateCompanyField(target.dataset.companyField, target.value);
       return;
@@ -605,13 +737,21 @@ function bindEvents() {
       return;
     }
     if (target.matches('[data-document-field]')) {
-      documentForm[target.dataset.documentField] = target.value;
+      documentForm[target.dataset.documentField] = target.type === 'number' ? Number(target.value) : target.value;
+      documentErrors = { ...documentErrors, [target.dataset.documentField]: '' };
+      updateDocumentTotals();
       return;
     }
     if (target.matches('[data-item]')) {
-      const item = items[Number(target.dataset.item)];
+      const item = documentForm.items[Number(target.dataset.item)];
       if (!item) return;
-      item[target.dataset.key] = target.dataset.key === 'name' ? target.value : target.value;
+      item[target.dataset.key] = target.type === 'number' ? Number(target.value) : target.value;
+      if (target.dataset.key === 'productId') {
+        const product = products.find(p => String(p.id) === String(target.value));
+        if (product) Object.assign(item, { description: product.name, unit: product.unit, unitPrice: product.price });
+        renderPreservingInteraction();
+        return;
+      }
       updateDocumentTotals();
     }
   });
@@ -623,6 +763,8 @@ function bindEvents() {
       handleLogoUpload(target.files?.[0]);
       return;
     }
+    if (target.matches('[data-document-status-filter]')) { documentStatusFilter = target.value; render(); return; }
+    if (target.matches('[data-document-sort]')) { documentSort = target.value; render(); return; }
     if (target.matches('[data-category-filter]')) {
       categoryFilter = target.value;
       render();
@@ -642,7 +784,11 @@ function bindEvents() {
       return;
     }
     if (target.matches('[data-document-field]')) {
-      documentForm[target.dataset.documentField] = target.value;
+      documentForm[target.dataset.documentField] = target.type === 'number' ? Number(target.value) : target.value;
+      if (target.dataset.documentField === 'customerId') {
+        documentForm.customerSnapshot = snapshotCustomer(customers.find(c => String(c.id) === String(target.value)));
+      }
+      updateDocumentTotals();
     }
   });
 
