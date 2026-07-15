@@ -3,6 +3,7 @@ const docTypes = [
 ].map(([key,label,code,color]) => ({key,label,code,color}));
 const storageKey = 'billing-atelier-products';
 const companyStorageKey = 'billing-atelier-company-settings';
+const customerStorageKey = 'billing-atelier-customers';
 const acceptedLogoTypes = ['image/png', 'image/jpeg', 'image/webp'];
 const defaultProducts = [
   { id: 1, sku: 'BRG-001', barcode: '8850001000011', name: 'กล่องของขวัญ Burgundy Signature', category: 'แพ็กเกจจิ้ง', unit: 'กล่อง', cost: 520, price: 890, qty: 48, min: 15 },
@@ -25,12 +26,123 @@ let productForm = createEmptyProduct();
 let productErrors = {};
 let companySettings = loadCompanySettings();
 let companyErrors = {};
+const customers = loadCustomers();
+let customerQuery = '';
+let customerTypeFilter = 'all';
+let editingCustomerId = null;
+let viewingCustomerId = null;
+let customerForm = createEmptyCustomer();
+let customerErrors = {};
+let deferredRenderId = 0;
 const money = new Intl.NumberFormat('th-TH', { style: 'currency', currency: 'THB' });
 const icon = (name) => `<span class="icon">${name}</span>`;
 const products = loadProducts();
 
 function createEmptyProduct() {
   return { sku: '', barcode: '', name: '', category: '', unit: '', cost: '', price: '', qty: '', min: '' };
+}
+
+
+function createEmptyCustomer() {
+  return { code: '', type: 'company', name: '', taxId: '', branch: '', address: '', province: '', district: '', subdistrict: '', postalCode: '', phone: '', email: '', contactPerson: '', notes: '' };
+}
+
+function generateCustomerCode(records = customers) {
+  const max = records.reduce((highest, customer) => {
+    const match = String(customer.code || '').match(/^CUS-(\d+)$/i);
+    return match ? Math.max(highest, Number(match[1])) : highest;
+  }, 0);
+  return `CUS-${String(max + 1).padStart(4, '0')}`;
+}
+
+function normalizeCustomers(records) {
+  return records.map((customer, index) => ({
+    ...createEmptyCustomer(),
+    ...customer,
+    id: Number(customer.id) || index + 1,
+    code: String(customer.code || `CUS-${String(index + 1).padStart(4, '0')}`).trim(),
+    type: customer.type === 'person' ? 'person' : 'company',
+    name: String(customer.name || '').trim(),
+    taxId: String(customer.taxId || '').trim(),
+    branch: String(customer.branch || '').trim(),
+    address: String(customer.address || '').trim(),
+    province: String(customer.province || '').trim(),
+    district: String(customer.district || '').trim(),
+    subdistrict: String(customer.subdistrict || '').trim(),
+    postalCode: String(customer.postalCode || '').trim(),
+    phone: String(customer.phone || '').trim(),
+    email: String(customer.email || '').trim(),
+    contactPerson: String(customer.contactPerson || '').trim(),
+    notes: String(customer.notes || '').trim(),
+  }));
+}
+
+function loadCustomers() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(customerStorageKey) || 'null');
+    if (Array.isArray(saved)) return normalizeCustomers(saved);
+  } catch {
+    localStorage.removeItem(customerStorageKey);
+  }
+  return [];
+}
+
+function saveCustomers() {
+  localStorage.setItem(customerStorageKey, JSON.stringify(customers));
+}
+
+function validateCustomer(data) {
+  const errors = {};
+  if (!String(data.code || '').trim()) errors.code = 'กรุณาระบุรหัสลูกค้า';
+  if (!String(data.name || '').trim()) errors.name = 'กรุณากรอกชื่อลูกค้า';
+  if (!String(data.taxId || '').trim()) errors.taxId = 'กรุณากรอกเลขประจำตัวผู้เสียภาษี';
+  if (!String(data.address || '').trim()) errors.address = 'กรุณากรอกที่อยู่';
+  if (!String(data.province || '').trim()) errors.province = 'กรุณากรอกจังหวัด';
+  if (!String(data.district || '').trim()) errors.district = 'กรุณากรอกอำเภอ/เขต';
+  if (!String(data.subdistrict || '').trim()) errors.subdistrict = 'กรุณากรอกตำบล/แขวง';
+  if (!String(data.postalCode || '').trim()) errors.postalCode = 'กรุณากรอกรหัสไปรษณีย์';
+  else if (!/^\d{5}$/.test(String(data.postalCode).trim())) errors.postalCode = 'รหัสไปรษณีย์ต้องเป็นตัวเลข 5 หลัก';
+  if (String(data.email || '').trim() && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(data.email).trim())) errors.email = 'รูปแบบอีเมลไม่ถูกต้อง';
+  const code = String(data.code || '').trim().toLowerCase();
+  const taxId = String(data.taxId || '').trim().toLowerCase();
+  if (customers.some(c => c.id !== editingCustomerId && c.code.toLowerCase() === code)) errors.code = 'รหัสลูกค้านี้มีอยู่แล้ว';
+  if (taxId && customers.some(c => c.id !== editingCustomerId && c.taxId.toLowerCase() === taxId)) errors.taxId = 'เลขประจำตัวผู้เสียภาษีนี้มีอยู่แล้ว';
+  return errors;
+}
+
+function formToCustomer() {
+  return Object.fromEntries(Object.entries(customerForm).map(([key, value]) => [key, String(value || '').trim()]));
+}
+
+function resetCustomerForm() {
+  editingCustomerId = null;
+  viewingCustomerId = null;
+  customerForm = { ...createEmptyCustomer(), code: generateCustomerCode() };
+  customerErrors = {};
+}
+
+function submitCustomer() {
+  const data = formToCustomer();
+  customerErrors = validateCustomer(data);
+  if (Object.keys(customerErrors).length) return false;
+  if (editingCustomerId) {
+    const index = customers.findIndex(c => c.id === editingCustomerId);
+    if (index >= 0) customers[index] = { ...customers[index], ...data };
+  } else {
+    customers.push({ id: Math.max(0, ...customers.map(c => c.id)) + 1, ...data });
+  }
+  saveCustomers();
+  resetCustomerForm();
+  return true;
+}
+
+function customerField(field, label, type = 'text') {
+  const readonly = field === 'code' ? 'readonly' : '';
+  return `<label>${label}<input ${readonly} type="${type}" data-customer-field="${field}" value="${escapeAttr(customerForm[field])}">${customerErrors[field] ? `<small class="error">${customerErrors[field]}</small>` : ''}</label>`;
+}
+
+function customerTextarea(field, label) {
+  return `<label class="wide">${label}<textarea data-customer-field="${field}">${escapeAttr(customerForm[field])}</textarea>${customerErrors[field] ? `<small class="error">${customerErrors[field]}</small>` : ''}</label>`;
 }
 
 function createDefaultCompanySettings() {
@@ -234,6 +346,28 @@ function productField(field, label, type = 'text') {
   return `<label>${label}<input ${type === 'number' ? 'min="0" step="0.01"' : ''} type="${type}" data-product-field="${field}" value="${escapeAttr(productForm[field])}">${productErrors[field] ? `<small class="error">${productErrors[field]}</small>` : ''}</label>`;
 }
 
+
+function renderPreservingInteraction() {
+  const active = document.activeElement;
+  const activeName = active instanceof HTMLElement ? active.getAttribute('data-search') !== null ? 'product-search' : active.getAttribute('data-customer-search') !== null ? 'customer-search' : '' : '';
+  const selectionStart = active instanceof HTMLInputElement ? active.selectionStart : null;
+  const selectionEnd = active instanceof HTMLInputElement ? active.selectionEnd : null;
+  const scrollX = window.scrollX;
+  const scrollY = window.scrollY;
+  render();
+  const next = activeName === 'product-search' ? document.querySelector('[data-search]') : activeName === 'customer-search' ? document.querySelector('[data-customer-search]') : null;
+  if (next instanceof HTMLInputElement) {
+    next.focus({ preventScroll: true });
+    if (selectionStart !== null && selectionEnd !== null) next.setSelectionRange(selectionStart, selectionEnd);
+  }
+  window.scrollTo(scrollX, scrollY);
+}
+
+function scheduleRender() {
+  window.clearTimeout(deferredRenderId);
+  deferredRenderId = window.setTimeout(renderPreservingInteraction, 180);
+}
+
 function render() {
   const root = document.querySelector('#root');
   if (!root) return;
@@ -245,8 +379,14 @@ function render() {
     const haystack = `${p.sku} ${p.barcode} ${p.name} ${p.category}`.toLowerCase();
     return haystack.includes(query.toLowerCase()) && (categoryFilter === 'all' || p.category === categoryFilter);
   });
+  if (!customerForm.code && !editingCustomerId) customerForm.code = generateCustomerCode();
+  const filteredCustomers = customers.filter(c => {
+    const haystack = `${c.code} ${c.name} ${c.taxId} ${c.branch} ${c.phone} ${c.email} ${c.contactPerson}`.toLowerCase();
+    return haystack.includes(customerQuery.toLowerCase()) && (customerTypeFilter === 'all' || c.type === customerTypeFilter);
+  });
+  const viewingCustomer = customers.find(c => c.id === viewingCustomerId);
   root.innerHTML = `<main>
-    <section class="hero"><nav><div class="brand">${icon('✦')} Billing Atelier</div><button data-print>${icon('⎙')} พิมพ์ / ส่งออก PDF</button></nav>
+    <section class="hero"><nav><div class="brand">${icon('✦')} Billing Atelier</div><div class="nav-actions"><a href="#customers">ลูกค้า</a><a href="#products">สินค้า</a><a href="#company">ตั้งค่าบริษัท</a><button data-print>${icon('⎙')} พิมพ์ / ส่งออก PDF</button></div></nav>
       <div class="hero-grid"><div><p class="eyebrow">Burgundy · Blue Navy · Rose Gold</p><h1>ระบบบิลและสต็อกสินค้า สำหรับธุรกิจไทยที่ดูอินเตอร์</h1><p>จัดการเอกสารขาย ซื้อ ส่งของ ภาษี รายรับ สต็อก และประวัติรายการย้อนหลังในหน้าเดียว พร้อมเอกสารโทนทางการที่อ่านง่ายเมื่อสั่งพิมพ์จริง</p></div><div class="glass-card">${icon('▣')}<strong>พร้อมใช้งาน</strong><span>ใบเสนอราคา ใบแจ้งหนี้ บิลเงินสด ใบกำกับภาษี ใบส่งของ ใบเสร็จรับเงิน และใบสั่งซื้อ</span></div></div></section>
     <section class="stats">${[['รายได้เดือนนี้', money.format(638420), '▰'], ['สินค้าทั้งหมด', `${products.length} รายการ`, '◫'], ['รอชำระ', money.format(127600), '฿'], ['สินค้าใกล้หมด', `${products.filter(p=>p.qty<=p.min).length} รายการ`, '□']].map(s => `<article>${icon(s[2])}<span>${s[0]}</span><strong>${s[1]}</strong></article>`).join('')}</section>
     <section class="workspace"><aside class="panel"><h2>ชนิดเอกสาร</h2>${docTypes.map(d => `<button class="doc ${selectedDoc.key===d.key?'active':''}" style="--doc:${d.color}" data-doc="${d.key}">${icon('▤')}<span>${d.label}</span><small>${d.code}</small></button>`).join('')}</aside>
@@ -256,7 +396,7 @@ function render() {
       <table><thead><tr><th>รายการ</th><th>จำนวน</th><th>ราคา/หน่วย</th><th>รวม</th></tr></thead><tbody>${items.map((it,i)=>`<tr><td><input data-item="${i}" data-key="name" value="${it.name}"></td><td><input type="number" data-item="${i}" data-key="qty" value="${it.qty}"></td><td><input type="number" data-item="${i}" data-key="price" value="${it.price}"></td><td>${money.format(it.qty*it.price)}</td></tr>`).join('')}</tbody></table><button class="add" data-add>+ เพิ่มรายการ</button>
       <div class="totals"><p><span>มูลค่าสินค้า</span><b>${money.format(subtotal)}</b></p><p><span>VAT 7%</span><b>${money.format(vat)}</b></p><p class="grand"><span>ยอดสุทธิ</span><b>${money.format(total)}</b></p></div></div></section></section>
 
-    <section class="company-settings panel"><div class="section-title"><h2>${icon('◈')} ตั้งค่าบริษัท</h2><span>บันทึกอัตโนมัติในเครื่องนี้</span></div>
+    <section class="company-settings panel" id="company"><div class="section-title"><h2>${icon('◈')} ตั้งค่าบริษัท</h2><span>บันทึกอัตโนมัติในเครื่องนี้</span></div>
       <div class="company-layout">
         <div class="logo-card">
           <div class="logo-preview">${companySettings.logo ? `<img src="${escapeAttr(companySettings.logo)}" alt="ตัวอย่างโลโก้บริษัท">` : `<span>${icon('▧')}</span><b>ยังไม่มีโลโก้</b>`}</div>
@@ -278,7 +418,17 @@ function render() {
         </form>
       </div>
     </section>
-    <section class="product-management panel"><div class="section-title"><h2>${icon('▦')} จัดการสินค้า</h2><span>${filtered.length} / ${products.length} รายการ</span></div>
+    <section class="customer-management panel" id="customers"><div class="section-title"><h2>${icon('☷')} จัดการลูกค้า</h2><span>${filteredCustomers.length} / ${customers.length} รายการ</span></div>
+      <form class="customer-form" data-customer-form>
+        <label>ประเภทลูกค้า<select data-customer-field="type"><option value="company" ${customerForm.type === 'company' ? 'selected' : ''}>นิติบุคคล / บริษัท</option><option value="person" ${customerForm.type === 'person' ? 'selected' : ''}>บุคคลธรรมดา</option></select></label>
+        ${customerField('code', 'รหัสลูกค้า')}${customerField('name', 'ชื่อลูกค้า')}${customerField('taxId', 'เลขประจำตัวผู้เสียภาษี')}${customerField('branch', 'สาขา')}${customerField('phone', 'โทรศัพท์')}${customerField('email', 'อีเมล', 'email')}${customerField('contactPerson', 'ผู้ติดต่อ')}${customerField('province', 'จังหวัด')}${customerField('district', 'อำเภอ / เขต')}${customerField('subdistrict', 'ตำบล / แขวง')}${customerField('postalCode', 'รหัสไปรษณีย์')}${customerTextarea('address', 'ที่อยู่')}${customerTextarea('notes', 'หมายเหตุ')}
+        <div class="form-actions"><button type="submit" class="primary">${editingCustomerId ? 'บันทึกการแก้ไข' : '+ เพิ่มลูกค้า'}</button><button type="button" data-reset-customer>ล้างฟอร์ม</button></div>
+      </form>
+      ${viewingCustomer ? `<div class="customer-detail"><h3>ข้อมูลลูกค้า: ${escapeAttr(viewingCustomer.name)}</h3><p><b>${escapeAttr(viewingCustomer.code)}</b> · ${viewingCustomer.type === 'company' ? 'บริษัท' : 'บุคคล'} · Tax ID ${escapeAttr(viewingCustomer.taxId)}</p><p>${escapeAttr(viewingCustomer.address)} ${escapeAttr(viewingCustomer.subdistrict)} ${escapeAttr(viewingCustomer.district)} ${escapeAttr(viewingCustomer.province)} ${escapeAttr(viewingCustomer.postalCode)}</p><p>โทร ${escapeAttr(viewingCustomer.phone || '-')} · อีเมล ${escapeAttr(viewingCustomer.email || '-')} · ผู้ติดต่อ ${escapeAttr(viewingCustomer.contactPerson || '-')}</p><p>${escapeAttr(viewingCustomer.notes || '')}</p></div>` : ''}
+      <div class="inventory-tools"><div class="search">${icon('⌕')}<input placeholder="ค้นหารหัส ชื่อ Tax ID โทรศัพท์ อีเมล หรือผู้ติดต่อ" value="${escapeAttr(customerQuery)}" data-customer-search></div><label>ประเภท<select data-customer-type-filter><option value="all">ทั้งหมด</option><option value="company" ${customerTypeFilter==='company'?'selected':''}>บริษัท</option><option value="person" ${customerTypeFilter==='person'?'selected':''}>บุคคล</option></select></label></div>
+      <div class="product-table customer-table"><table><thead><tr><th>ลูกค้า</th><th>ประเภท</th><th>Tax ID</th><th>สาขา</th><th>ที่อยู่</th><th>ติดต่อ</th><th>จัดการ</th></tr></thead><tbody>${filteredCustomers.map(c=>`<tr><td><strong>${escapeAttr(c.name)}</strong><span>${escapeAttr(c.code)}</span></td><td>${c.type === 'company' ? 'บริษัท' : 'บุคคล'}</td><td>${escapeAttr(c.taxId)}</td><td>${escapeAttr(c.branch || '-')}</td><td>${escapeAttr(c.subdistrict)} ${escapeAttr(c.district)} ${escapeAttr(c.province)} ${escapeAttr(c.postalCode)}</td><td>${escapeAttr(c.phone || '-')}<br><span>${escapeAttr(c.email || '')}</span></td><td><button data-view-customer="${c.id}">ดู</button><button data-edit-customer="${c.id}">แก้ไข</button><button class="danger" data-delete-customer="${c.id}">ลบ</button></td></tr>`).join('') || '<tr><td colspan="7">ไม่พบลูกค้า</td></tr>'}</tbody></table></div>
+    </section>
+    <section class="product-management panel" id="products"><div class="section-title"><h2>${icon('▦')} จัดการสินค้า</h2><span>${filtered.length} / ${products.length} รายการ</span></div>
       <form class="product-form" data-product-form>
         ${productField('sku', 'SKU')}${productField('barcode', 'Barcode')}${productField('name', 'ชื่อสินค้า')}${productField('category', 'หมวดหมู่')}${productField('unit', 'หน่วย')}${productField('cost', 'ต้นทุน', 'number')}${productField('price', 'ราคาขาย', 'number')}${productField('qty', 'สต็อกปัจจุบัน', 'number')}${productField('min', 'สต็อกขั้นต่ำ', 'number')}
         <div class="form-actions"><button type="submit" class="primary">${editingProductId ? 'บันทึกการแก้ไข' : '+ เพิ่มสินค้า'}</button><button type="button" data-reset-product>ล้างฟอร์ม</button></div>
@@ -299,6 +449,7 @@ function bindEvents() {
     if (target.closest('[data-print]')) window.print();
     if (target.closest('[data-add]')) items.push({ name: 'รายการใหม่', qty: 1, price: 0 });
     if (target.closest('[data-reset-product]')) resetProductForm();
+    if (target.closest('[data-reset-customer]')) resetCustomerForm();
     const companyForm = target.closest('[data-company-form]');
     if (target.closest('[data-save-company]') && companyForm) {
       saveCompanyForm(companyForm);
@@ -318,6 +469,27 @@ function bindEvents() {
       return;
     }
     if (companyForm) return;
+    const viewCustomer = target.closest('[data-view-customer]');
+    if (viewCustomer) viewingCustomerId = Number(viewCustomer.dataset.viewCustomer);
+    const editCustomer = target.closest('[data-edit-customer]');
+    if (editCustomer) {
+      const customer = customers.find(c => c.id === Number(editCustomer.dataset.editCustomer));
+      if (customer) {
+        editingCustomerId = customer.id;
+        viewingCustomerId = customer.id;
+        customerForm = { ...createEmptyCustomer(), ...customer };
+        customerErrors = {};
+      }
+    }
+    const removeCustomer = target.closest('[data-delete-customer]');
+    if (removeCustomer && confirm('ลบลูกค้านี้ออกจากระบบ?')) {
+      const index = customers.findIndex(c => c.id === Number(removeCustomer.dataset.deleteCustomer));
+      if (index >= 0) {
+        customers.splice(index, 1);
+        saveCustomers();
+        resetCustomerForm();
+      }
+    }
     const edit = target.closest('[data-edit-product]');
     if (edit) {
       const product = products.find(p => p.id === Number(edit.dataset.editProduct));
@@ -360,20 +532,35 @@ function bindEvents() {
   document.addEventListener('input', (e) => {
     const target = e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement ? e.target : null;
     if (!target) return;
-    if (target.matches('[data-search]')) query = target.value;
+    if (target.matches('[data-search]')) {
+      query = target.value;
+      scheduleRender();
+      return;
+    }
+    if (target.matches('[data-customer-search]')) {
+      customerQuery = target.value;
+      scheduleRender();
+      return;
+    }
     if (target.matches('[data-company-field]')) {
       updateCompanyField(target.dataset.companyField, target.value);
+      return;
+    }
+    if (target.matches('[data-customer-field]')) {
+      customerForm[target.dataset.customerField] = target.value;
+      customerErrors = { ...customerErrors, [target.dataset.customerField]: '' };
       return;
     }
     if (target.matches('[data-product-field]')) {
       productForm[target.dataset.productField] = target.value;
       productErrors = {};
+      return;
     }
     if (target.matches('[data-item]')) {
       const value = target.dataset.key === 'name' ? target.value : Number(target.value);
       items[Number(target.dataset.item)][target.dataset.key] = value;
+      render();
     }
-    render();
   });
 
   document.addEventListener('change', (e) => {
@@ -384,11 +571,18 @@ function bindEvents() {
       categoryFilter = target.value;
       render();
     }
+    if (target.matches('[data-customer-type-filter]')) {
+      customerTypeFilter = target.value;
+      render();
+    }
+    if (target.matches('[data-customer-field]')) {
+      customerForm[target.dataset.customerField] = target.value;
+    }
   });
 
   document.addEventListener('keydown', (e) => {
     const target = e.target instanceof HTMLInputElement ? e.target : null;
-    if (target?.closest('[data-company-form]') && e.key === 'Enter') e.preventDefault();
+    if ((target?.closest('[data-company-form]') || target?.closest('[data-customer-form]')) && e.key === 'Enter') e.preventDefault();
   });
 
   document.addEventListener('submit', (e) => {
@@ -396,6 +590,12 @@ function bindEvents() {
     if (!form) return;
     if (form.matches('[data-company-form]')) {
       e.preventDefault();
+      return;
+    }
+    if (form.matches('[data-customer-form]')) {
+      e.preventDefault();
+      submitCustomer();
+      render();
       return;
     }
     if (!form.matches('[data-product-form]')) return;
