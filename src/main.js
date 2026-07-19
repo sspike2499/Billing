@@ -5,19 +5,74 @@ const storageKey = 'billing-atelier-products';
 const companyStorageKey = 'billing-atelier-company-settings';
 const customerStorageKey = 'billing-atelier-customers';
 const documentStorageKey = 'billing-atelier-documents';
+const paymentStorageKey = 'billing-atelier-payments';
+const paymentSequenceStorageKey = 'billing-atelier-payment-sequences';
 const documentSchemaVersion = 1;
 const documentStatuses = [
   ['draft', 'Draft'], ['sent', 'Sent'], ['approved', 'Approved'], ['waiting_payment', 'Waiting for payment'], ['partially_paid', 'Partially paid'], ['paid', 'Paid'], ['cancelled', 'Cancelled']
 ];
 const defaultDocumentPrefixes = Object.fromEntries(docTypes.map(d => [d.key, d.code]));
 let documentStore = loadDocuments();
+let paymentStore = loadPayments();
 let activeDocumentId = null;
 let documentQuery = '';
 let documentStatusFilter = 'all';
 let documentSort = 'newest';
 let documentMessage = '';
 let documentErrors = {};
+let paymentMessage = '';
+let paymentErrors = {};
+let editingPaymentId = null;
+let viewingPaymentId = null;
+let paymentQuery = '';
+let paymentMethodFilter = 'all';
+let paymentStatusFilter = 'active';
+let paymentDateFilter = '';
+let paymentCustomerFilter = 'all';
+let isSavingPayment = false;
+let receiptViewPaymentId = null;
+let paymentForm = createEmptyPaymentForm();
 let isSavingDocument = false;
+
+
+const paymentMethods = [
+  ['cash', 'Cash'], ['bank_transfer', 'Bank transfer'], ['promptpay', 'PromptPay'], ['card', 'Credit/debit card'], ['cheque', 'Cheque'], ['other', 'Other']
+];
+const paymentStatuses = [['active', 'Active'], ['cancelled', 'Cancelled']];
+function paymentMethodLabel(method) { return (paymentMethods.find(m => m[0] === method) || paymentMethods[5])[1]; }
+function createEmptyPaymentForm(documentId = activeDocumentId) {
+  return { documentId: documentId || '', paymentDate: todayISO(), paymentTime: new Date().toTimeString().slice(0,5), amount: '', method: 'bank_transfer', referenceNumber: '', bankAccountInfo: '', notes: '', attachmentName: '', attachmentType: '', attachmentSize: '' };
+}
+function loadPaymentSequences() {
+  try { return { payment: 0, receipt: 0, ...(JSON.parse(localStorage.getItem(paymentSequenceStorageKey) || 'null') || {}) }; }
+  catch { return { payment: 0, receipt: 0 }; }
+}
+function savePaymentSequences(sequences) { localStorage.setItem(paymentSequenceStorageKey, JSON.stringify(sequences)); }
+function normalizePaymentRecord(r = {}, index = 0) {
+  const createdAt = r.createdAt || new Date(Date.now() - index).toISOString();
+  return { id: String(r.id || createId('pay')), paymentNumber: String(r.paymentNumber || '').trim(), receiptNumber: String(r.receiptNumber || '').trim(), documentId: String(r.documentId || ''), documentNumber: String(r.documentNumber || ''), customerId: r.customerId ? String(r.customerId) : '', customerSnapshot: r.customerSnapshot || null, companySnapshot: r.companySnapshot || null, paymentDate: String(r.paymentDate || todayISO()), paymentTime: String(r.paymentTime || '00:00').slice(0,5), amount: Math.max(0, Number(r.amount) || 0), method: paymentMethods.some(m => m[0] === r.method) ? r.method : 'other', referenceNumber: String(r.referenceNumber || ''), bankAccountInfo: String(r.bankAccountInfo || ''), notes: String(r.notes || ''), attachment: r.attachment && typeof r.attachment === 'object' ? { name: String(r.attachment.name || ''), type: String(r.attachment.type || ''), size: Number(r.attachment.size) || 0 } : null, status: r.status === 'cancelled' ? 'cancelled' : 'active', cancelledAt: r.cancelledAt || '', cancelReason: String(r.cancelReason || ''), createdAt, updatedAt: r.updatedAt || createdAt };
+}
+function loadPayments() {
+  try {
+    const raw = JSON.parse(localStorage.getItem(paymentStorageKey) || 'null');
+    const records = (Array.isArray(raw) ? raw : Array.isArray(raw?.records) ? raw.records : []).filter(x => x && typeof x === 'object').map(normalizePaymentRecord);
+    const sequences = loadPaymentSequences();
+    records.forEach(p => { const pm = p.paymentNumber.match(/PAY-\d{4}-(\d+)$/); const rc = p.receiptNumber.match(/RCPT-\d{4}-(\d+)$/); if (pm) sequences.payment = Math.max(sequences.payment, Number(pm[1])); if (rc) sequences.receipt = Math.max(sequences.receipt, Number(rc[1])); });
+    savePaymentSequences(sequences);
+    return { records, sequences };
+  } catch { return { records: [], sequences: loadPaymentSequences() }; }
+}
+function savePayments() { localStorage.setItem(paymentStorageKey, JSON.stringify({ records: paymentStore.records })); savePaymentSequences(paymentStore.sequences); }
+function nextPaymentNumber(kind) { paymentStore.sequences[kind] = (Number(paymentStore.sequences[kind]) || 0) + 1; return `${kind === 'receipt' ? 'RCPT' : 'PAY'}-${new Date().getFullYear()}-${String(paymentStore.sequences[kind]).padStart(5, '0')}`; }
+function paymentsForDocument(documentId, includeCancelled = true) { return paymentStore.records.filter(p => p.documentId === documentId && (includeCancelled || p.status !== 'cancelled')); }
+function paymentSummary(doc) { const total = documentTotals(doc).grandTotal; const paid = paymentsForDocument(doc.id, false).reduce((s,p)=>s + Number(p.amount || 0), 0); return { total, paid, remaining: Math.max(0, total - paid) }; }
+function recalcDocumentPaymentStatus(documentId) { const i = documentStore.records.findIndex(d => d.id === documentId); if (i < 0 || documentStore.records[i].status === 'cancelled') return; const s = paymentSummary(documentStore.records[i]); const status = s.paid <= 0 ? 'waiting_payment' : s.remaining <= 0.009 ? 'paid' : 'partially_paid'; documentStore.records[i] = { ...documentStore.records[i], status, updatedAt: new Date().toISOString() }; if (documentForm.id === documentId) documentForm.status = status; saveDocumentStore(); }
+function filteredPayments() { const q = paymentQuery.toLowerCase(); return paymentStore.records.filter(p => { const hay = `${p.paymentNumber} ${p.receiptNumber} ${p.documentNumber} ${p.customerSnapshot?.name || ''} ${p.referenceNumber} ${p.notes}`.toLowerCase(); return hay.includes(q) && (paymentMethodFilter === 'all' || p.method === paymentMethodFilter) && (paymentStatusFilter === 'all' || p.status === paymentStatusFilter) && (!paymentDateFilter || p.paymentDate === paymentDateFilter) && (paymentCustomerFilter === 'all' || String(p.customerId) === String(paymentCustomerFilter)); }).sort((a,b)=>String(b.createdAt).localeCompare(String(a.createdAt))); }
+function validatePayment(data, doc) { const errors = {}; const amount = Number(data.amount); if (!doc) errors.documentId = 'กรุณาเลือกเอกสารที่บันทึกไว้'; else if (doc.status === 'cancelled') errors.documentId = 'เอกสารที่ยกเลิกแล้วไม่สามารถรับชำระเงินใหม่ได้'; if (!Number.isFinite(amount) || amount <= 0) errors.amount = 'ยอดชำระต้องมากกว่า 0'; if (!data.paymentDate) errors.paymentDate = 'กรุณาระบุวันที่ชำระเงิน'; if (!data.paymentTime) errors.paymentTime = 'กรุณาระบุเวลาชำระเงิน'; if (!paymentMethods.some(m => m[0] === data.method)) errors.method = 'กรุณาเลือกวิธีชำระเงิน'; const remaining = doc ? paymentSummary(doc).remaining + (editingPaymentId ? Number(paymentStore.records.find(p => p.id === editingPaymentId)?.amount || 0) : 0) : 0; if (amount > remaining + 0.009 && !confirm(`ยอดชำระมากกว่ายอดคงเหลือ ${money.format(remaining)} ต้องการบันทึกต่อหรือไม่?`)) errors.amount = 'ยอดชำระเกินยอดคงเหลือ'; return errors; }
+function savePayment() { if (isSavingPayment) return; isSavingPayment = true; const doc = documentStore.records.find(d => d.id === paymentForm.documentId); paymentErrors = validatePayment(paymentForm, doc); if (Object.keys(paymentErrors).length) { paymentMessage = 'กรุณาตรวจสอบข้อมูลการชำระเงิน'; isSavingPayment = false; render(); return; } const now = new Date().toISOString(); const existing = paymentStore.records.findIndex(p => p.id === editingPaymentId); const record = { ...normalizePaymentRecord(paymentForm), id: editingPaymentId || createId('pay'), paymentNumber: existing >= 0 ? paymentStore.records[existing].paymentNumber : nextPaymentNumber('payment'), receiptNumber: existing >= 0 ? paymentStore.records[existing].receiptNumber : nextPaymentNumber('receipt'), documentId: doc.id, documentNumber: doc.documentNumber, customerId: String(doc.customerId || ''), customerSnapshot: doc.customerSnapshot || snapshotCustomer(customers.find(c => String(c.id) === String(doc.customerId))), companySnapshot: doc.companySnapshot || snapshotCompany(), amount: Number(paymentForm.amount), attachment: paymentForm.attachmentName ? { name: paymentForm.attachmentName, type: paymentForm.attachmentType, size: Number(paymentForm.attachmentSize) || 0 } : null, status: 'active', createdAt: existing >= 0 ? paymentStore.records[existing].createdAt : now, updatedAt: now };
+  if (existing >= 0) paymentStore.records[existing] = { ...paymentStore.records[existing], ...record }; else paymentStore.records.unshift(record); savePayments(); recalcDocumentPaymentStatus(doc.id); editingPaymentId = null; viewingPaymentId = record.id; paymentForm = createEmptyPaymentForm(doc.id); paymentMessage = 'บันทึกการชำระเงินเรียบร้อยแล้ว'; isSavingPayment = false; render(); }
+function editPayment(id) { const p = paymentStore.records.find(x => x.id === id); if (!p || p.status === 'cancelled') return; editingPaymentId = id; viewingPaymentId = id; paymentForm = { documentId: p.documentId, paymentDate: p.paymentDate, paymentTime: p.paymentTime, amount: p.amount, method: p.method, referenceNumber: p.referenceNumber, bankAccountInfo: p.bankAccountInfo, notes: p.notes, attachmentName: p.attachment?.name || '', attachmentType: p.attachment?.type || '', attachmentSize: p.attachment?.size || '' }; paymentErrors = {}; paymentMessage = 'แก้ไขรายการชำระเงิน'; render(); }
+function cancelPayment(id) { const p = paymentStore.records.find(x => x.id === id); if (!p || p.status === 'cancelled') return; const reason = prompt('ระบุเหตุผลการยกเลิกการชำระเงิน') || ''; Object.assign(p, { status: 'cancelled', cancelledAt: new Date().toISOString(), cancelReason: reason, updatedAt: new Date().toISOString() }); savePayments(); recalcDocumentPaymentStatus(p.documentId); paymentMessage = 'ยกเลิกการชำระเงินแล้ว และคำนวณยอดใหม่เรียบร้อย'; render(); }
 
 function todayISO() { return new Date().toISOString().slice(0, 10); }
 function addDaysISO(days) { const date = new Date(); date.setDate(date.getDate() + days); return date.toISOString().slice(0, 10); }
@@ -509,6 +564,10 @@ function render() {
     return haystack.includes(customerQuery.toLowerCase()) && (customerTypeFilter === 'all' || c.type === customerTypeFilter);
   });
   const viewingCustomer = customers.find(c => c.id === viewingCustomerId);
+  const currentPaymentSummary = activeDocumentId ? paymentSummary(documentForm) : { total: documentTotals().grandTotal, paid: 0, remaining: documentTotals().grandTotal };
+  const currentPayments = activeDocumentId ? paymentsForDocument(activeDocumentId, true) : [];
+  const viewingPayment = paymentStore.records.find(p => p.id === viewingPaymentId);
+  const receiptPayment = paymentStore.records.find(p => p.id === receiptViewPaymentId);
   root.innerHTML = `<main>
     <section class="hero"><nav><div class="brand">${icon('✦')} Billing Atelier</div><div class="nav-actions"><a href="#customers">ลูกค้า</a><a href="#products">สินค้า</a><a href="#company">ตั้งค่าบริษัท</a><button data-print>${icon('⎙')} พิมพ์ / ส่งออก PDF</button></div></nav>
       <div class="hero-grid"><div><p class="eyebrow">Burgundy · Blue Navy · Rose Gold</p><h1>ระบบบิลและสต็อกสินค้า สำหรับธุรกิจไทยที่ดูอินเตอร์</h1><p>จัดการเอกสารขาย ซื้อ ส่งของ ภาษี รายรับ สต็อก และประวัติรายการย้อนหลังในหน้าเดียว พร้อมเอกสารโทนทางการที่อ่านง่ายเมื่อสั่งพิมพ์จริง</p></div><div class="glass-card">${icon('▣')}<strong>พร้อมใช้งาน</strong><span>ใบเสนอราคา ใบแจ้งหนี้ บิลเงินสด ใบกำกับภาษี ใบส่งของ ใบเสร็จรับเงิน และใบสั่งซื้อ</span></div></div></section>
@@ -522,7 +581,18 @@ function render() {
       <div class="customer-snapshot"><b>ข้อมูลลูกค้าที่บันทึกในเอกสาร:</b> ${escapeAttr(documentForm.customerSnapshot?.name || customers.find(c=>String(c.id)===String(documentForm.customerId))?.name || '-')} · Tax ID ${escapeAttr(documentForm.customerSnapshot?.taxId || customers.find(c=>String(c.id)===String(documentForm.customerId))?.taxId || '-')}</div>
       <table><thead><tr><th>สินค้า</th><th>รายละเอียด</th><th>จำนวน</th><th>หน่วย</th><th>ราคา/หน่วย</th><th>ส่วนลด</th><th>รวม</th><th class="edit-control"></th></tr></thead><tbody>${documentForm.items.map((it,i)=>`<tr><td><select data-item="${i}" data-key="productId"><option value="">เลือกรายการ</option>${products.map(p=>`<option value="${p.id}" ${String(it.productId)===String(p.id)?'selected':''}>${escapeAttr(p.name)}</option>`).join('')}</select></td><td><input data-item="${i}" data-key="description" value="${escapeAttr(it.description)}">${documentErrors[`item-${i}`] ? `<small class="error">${documentErrors[`item-${i}`]}</small>` : ''}</td><td><input type="number" min="0" step="0.01" data-item="${i}" data-key="quantity" value="${escapeAttr(it.quantity)}"></td><td><input data-item="${i}" data-key="unit" value="${escapeAttr(it.unit)}"></td><td><input type="number" min="0" step="0.01" data-item="${i}" data-key="unitPrice" value="${escapeAttr(it.unitPrice)}"></td><td><input type="number" min="0" step="0.01" data-item="${i}" data-key="discount" value="${escapeAttr(it.discount)}"></td><td data-line-total="${i}">${money.format(Math.max(0,(Number(it.quantity)||0)*(Number(it.unitPrice)||0)-(Number(it.discount)||0)))}</td><td class="edit-control"><button type="button" class="danger" data-remove-item="${i}">ลบ</button></td></tr>`).join('')}</tbody></table>${documentErrors.items ? `<small class="error">${documentErrors.items}</small>` : ''}<button type="button" class="add" data-add>+ เพิ่มรายการ</button>
       <div class="form-grid document-text"><label class="wide">หมายเหตุ<textarea data-document-field="notes">${escapeAttr(documentForm.notes)}</textarea></label><label class="wide">เงื่อนไขการชำระเงิน<textarea data-document-field="paymentTerms">${escapeAttr(documentForm.paymentTerms)}</textarea></label><label class="wide">ข้อความท้ายเอกสาร<textarea data-document-field="footerText">${escapeAttr(documentForm.footerText)}</textarea></label></div>
-      <div class="totals"><p><span>มูลค่าสินค้า</span><b data-subtotal>${money.format(documentTotals().subtotal)}</b></p><p><span>ส่วนลด</span><b data-discount>${money.format(documentTotals().discount)}</b></p><p><span>VAT</span><b data-vat>${money.format(documentTotals().vat)}</b></p><p><span>หัก ณ ที่จ่าย</span><b data-withholding>${money.format(documentTotals().withholding)}</b></p><p class="grand"><span>ยอดสุทธิ</span><b data-total>${money.format(documentTotals().grandTotal)}</b></p></div></div></section></section>
+      <div class="totals"><p><span>มูลค่าสินค้า</span><b data-subtotal>${money.format(documentTotals().subtotal)}</b></p><p><span>ส่วนลด</span><b data-discount>${money.format(documentTotals().discount)}</b></p><p><span>VAT</span><b data-vat>${money.format(documentTotals().vat)}</b></p><p><span>หัก ณ ที่จ่าย</span><b data-withholding>${money.format(documentTotals().withholding)}</b></p><p class="grand"><span>ยอดสุทธิ</span><b data-total>${money.format(documentTotals().grandTotal)}</b></p><p><span>ชำระแล้ว</span><b data-paid>${money.format(currentPaymentSummary.paid)}</b></p><p><span>คงเหลือ</span><b data-remaining>${money.format(currentPaymentSummary.remaining)}</b></p></div>
+      <section class="payment-panel"><div class="section-title"><h2>${icon('฿')} Payment Management</h2><span>${escapeAttr(paymentMessage || 'บันทึกชำระเงินและออกใบเสร็จจากเอกสารที่บันทึกแล้ว')}</span></div>
+        <form class="payment-form" data-payment-form>
+          <label>เอกสาร<select data-payment-field="documentId"><option value="">เลือกเอกสาร</option>${documentStore.records.filter(d=>['invoice','tax','cash','receipt'].includes(d.type)).map(d=>`<option value="${d.id}" ${paymentForm.documentId===d.id?'selected':''}>${escapeAttr(d.documentNumber)} · ${escapeAttr(d.customerSnapshot?.name || '-')} · ${statusLabel(d.status)}</option>`).join('')}</select>${paymentErrors.documentId ? `<small class="error">${paymentErrors.documentId}</small>` : ''}</label>
+          <label>วันที่<input type="date" data-payment-field="paymentDate" value="${escapeAttr(paymentForm.paymentDate)}">${paymentErrors.paymentDate ? `<small class="error">${paymentErrors.paymentDate}</small>` : ''}</label><label>เวลา<input type="time" data-payment-field="paymentTime" value="${escapeAttr(paymentForm.paymentTime)}">${paymentErrors.paymentTime ? `<small class="error">${paymentErrors.paymentTime}</small>` : ''}</label><label>ยอดชำระ<input type="number" min="0.01" step="0.01" data-payment-field="amount" value="${escapeAttr(paymentForm.amount)}">${paymentErrors.amount ? `<small class="error">${paymentErrors.amount}</small>` : ''}</label>
+          <label>วิธีชำระ<select data-payment-field="method">${paymentMethods.map(([k,l])=>`<option value="${k}" ${paymentForm.method===k?'selected':''}>${l}</option>`).join('')}</select></label><label>เลขอ้างอิง<input data-payment-field="referenceNumber" value="${escapeAttr(paymentForm.referenceNumber)}"></label><label>ธนาคาร/บัญชี<input data-payment-field="bankAccountInfo" value="${escapeAttr(paymentForm.bankAccountInfo)}"></label><label>หลักฐานแนบ<input placeholder="ชื่อไฟล์/URL" data-payment-field="attachmentName" value="${escapeAttr(paymentForm.attachmentName)}"></label><label class="wide">หมายเหตุ<textarea data-payment-field="notes">${escapeAttr(paymentForm.notes)}</textarea></label>
+          <div class="form-actions"><button type="submit" class="primary" ${isSavingPayment || !activeDocumentId || documentForm.status==='cancelled' ? 'disabled' : ''}>${editingPaymentId ? 'บันทึกแก้ไข' : '+ เพิ่มการชำระเงิน'}</button><button type="button" data-reset-payment>ล้างฟอร์ม</button></div>
+        </form>
+        <div class="payment-history"><h3>ประวัติการชำระเงินในเอกสารนี้</h3>${currentPayments.map(p=>`<article class="payment-row ${p.status}"><div><strong>${escapeAttr(p.paymentNumber)}</strong><span>${escapeAttr(p.paymentDate)} ${escapeAttr(p.paymentTime)} · ${paymentMethodLabel(p.method)} · ใบเสร็จ ${escapeAttr(p.receiptNumber)}</span><small>${escapeAttr(p.referenceNumber || p.bankAccountInfo || p.notes || '')}${p.status==='cancelled' ? ` · ยกเลิก ${escapeAttr(p.cancelReason || '')}` : ''}</small></div><b>${money.format(p.amount)}</b><em>${p.status==='cancelled'?'Cancelled':'Active'}</em><button type="button" data-view-payment="${p.id}">ดู</button><button type="button" data-edit-payment="${p.id}" ${p.status==='cancelled'?'disabled':''}>แก้ไข</button><button type="button" data-receipt="${p.id}">ใบเสร็จ</button><button type="button" class="danger" data-cancel-payment="${p.id}" ${p.status==='cancelled'?'disabled':''}>ยกเลิก</button></article>`).join('') || '<p class="empty">ยังไม่มีประวัติการชำระเงิน</p>'}</div>
+      </section></div></section></section>
+    <section class="payment-management panel" id="payments"><div class="section-title"><h2>${icon('฿')} ค้นหาการชำระเงิน</h2><span>${filteredPayments().length} / ${paymentStore.records.length} รายการ</span></div><div class="inventory-tools payment-tools"><div class="search">${icon('⌕')}<input placeholder="ค้นหาเลขชำระ ใบเสร็จ ใบแจ้งหนี้ ลูกค้า อ้างอิง" value="${escapeAttr(paymentQuery)}" data-payment-search></div><label>วิธี<select data-payment-method-filter><option value="all">ทั้งหมด</option>${paymentMethods.map(([k,l])=>`<option value="${k}" ${paymentMethodFilter===k?'selected':''}>${l}</option>`).join('')}</select></label><label>สถานะ<select data-payment-status-filter><option value="all">ทั้งหมด</option>${paymentStatuses.map(([k,l])=>`<option value="${k}" ${paymentStatusFilter===k?'selected':''}>${l}</option>`).join('')}</select></label><label>วันที่<input type="date" data-payment-date-filter value="${escapeAttr(paymentDateFilter)}"></label><label>ลูกค้า<select data-payment-customer-filter><option value="all">ทั้งหมด</option>${customers.map(c=>`<option value="${c.id}" ${String(paymentCustomerFilter)===String(c.id)?'selected':''}>${escapeAttr(c.name)}</option>`).join('')}</select></label></div>${viewingPayment ? `<div class="customer-detail"><h3>${escapeAttr(viewingPayment.paymentNumber)} · ${escapeAttr(viewingPayment.receiptNumber)}</h3><p>${escapeAttr(viewingPayment.documentNumber)} · ${escapeAttr(viewingPayment.customerSnapshot?.name || '-')} · ${money.format(viewingPayment.amount)}</p><p>${paymentMethodLabel(viewingPayment.method)} · Ref ${escapeAttr(viewingPayment.referenceNumber || '-')} · ${escapeAttr(viewingPayment.bankAccountInfo || '-')}</p><p>${escapeAttr(viewingPayment.notes || '')}</p></div>` : ''}<div class="product-table"><table><thead><tr><th>Payment</th><th>เอกสาร</th><th>ลูกค้า</th><th>วันที่</th><th>วิธี</th><th>ยอด</th><th>สถานะ</th><th>จัดการ</th></tr></thead><tbody>${filteredPayments().map(p=>`<tr><td><strong>${escapeAttr(p.paymentNumber)}</strong><span>${escapeAttr(p.receiptNumber)}</span></td><td>${escapeAttr(p.documentNumber)}</td><td>${escapeAttr(p.customerSnapshot?.name || '-')}</td><td>${escapeAttr(p.paymentDate)} ${escapeAttr(p.paymentTime)}</td><td>${paymentMethodLabel(p.method)}</td><td>${money.format(p.amount)}</td><td>${p.status==='cancelled'?'Cancelled':'Active'}</td><td><button data-view-payment="${p.id}">ดู</button><button data-edit-payment="${p.id}" ${p.status==='cancelled'?'disabled':''}>แก้ไข</button><button data-receipt="${p.id}">ใบเสร็จ</button><button class="danger" data-cancel-payment="${p.id}" ${p.status==='cancelled'?'disabled':''}>ยกเลิก</button></td></tr>`).join('') || '<tr><td colspan="8">ไม่พบรายการชำระเงิน</td></tr>'}</tbody></table></div></section>
+    ${receiptPayment ? `<section class="receipt-sheet panel"><div class="toolbar receipt-controls"><h2>Receipt ${escapeAttr(receiptPayment.receiptNumber)}</h2><div><button data-print>${icon('⎙')} Print/PDF</button><button data-close-receipt>ปิด</button></div></div><article class="paper" style="--accent:#4c1d95"><header><div class="paper-company">${receiptPayment.companySnapshot?.logo ? `<img src="${escapeAttr(receiptPayment.companySnapshot.logo)}" class="paper-logo" alt="โลโก้บริษัท">` : ''}<div><h3>ใบเสร็จรับเงิน</h3><p>${escapeAttr(receiptPayment.companySnapshot?.name || '')} · Tax ID ${escapeAttr(receiptPayment.companySnapshot?.taxId || '-')}</p><p>${escapeAttr(receiptPayment.companySnapshot?.address || '')} ${escapeAttr(receiptPayment.companySnapshot?.province || '')}</p></div></div><strong>${escapeAttr(receiptPayment.receiptNumber)}</strong></header><div class="customer-snapshot"><b>ลูกค้า:</b> ${escapeAttr(receiptPayment.customerSnapshot?.name || '-')} · Tax ID ${escapeAttr(receiptPayment.customerSnapshot?.taxId || '-')}<br><b>อ้างอิงใบแจ้งหนี้:</b> ${escapeAttr(receiptPayment.documentNumber)}</div><table><tbody><tr><th>วันที่/เวลา</th><td>${escapeAttr(receiptPayment.paymentDate)} ${escapeAttr(receiptPayment.paymentTime)}</td></tr><tr><th>วิธีชำระเงิน</th><td>${paymentMethodLabel(receiptPayment.method)}</td></tr><tr><th>เลขอ้างอิง</th><td>${escapeAttr(receiptPayment.referenceNumber || '-')}</td></tr><tr><th>ธนาคาร/บัญชี</th><td>${escapeAttr(receiptPayment.bankAccountInfo || '-')}</td></tr><tr><th>จำนวนเงินที่รับชำระ</th><td><b>${money.format(receiptPayment.amount)}</b></td></tr></tbody></table></article></section>` : ''}
 
     <section class="company-settings panel" id="company"><div class="section-title"><h2>${icon('◈')} ตั้งค่าบริษัท</h2><span>บันทึกอัตโนมัติในเครื่องนี้</span></div>
       <div class="company-layout">
@@ -579,12 +649,12 @@ function bindEvents() {
       render();
       return;
     }
-    if (target.closest('[data-new-document]')) { newDocument(selectedDoc.key); return; }
+    if (target.closest('[data-new-document]')) { newDocument(selectedDoc.key); paymentForm = createEmptyPaymentForm(''); return; }
     if (target.closest('[data-save-document]')) { saveDocument(); return; }
     if (target.closest('[data-duplicate-active]')) { duplicateDocument(activeDocumentId); return; }
     if (target.closest('[data-cancel-document]') && confirm('ยกเลิกเอกสารนี้โดยเก็บประวัติไว้?')) { cancelDocument(activeDocumentId); return; }
     const openDoc = target.closest('[data-open-document]');
-    if (openDoc) { openDocument(openDoc.dataset.openDocument); return; }
+    if (openDoc) { openDocument(openDoc.dataset.openDocument); paymentForm = createEmptyPaymentForm(openDoc.dataset.openDocument); return; }
     const dupDoc = target.closest('[data-duplicate-document]');
     if (dupDoc) { duplicateDocument(dupDoc.dataset.duplicateDocument); return; }
     const removeItem = target.closest('[data-remove-item]');
@@ -593,6 +663,16 @@ function bindEvents() {
       window.print();
       return;
     }
+    if (target.closest('[data-reset-payment]')) { editingPaymentId = null; paymentForm = createEmptyPaymentForm(activeDocumentId); paymentErrors = {}; render(); return; }
+    if (target.closest('[data-close-receipt]')) { receiptViewPaymentId = null; render(); return; }
+    const viewPay = target.closest('[data-view-payment]');
+    if (viewPay) { viewingPaymentId = viewPay.dataset.viewPayment; render(); return; }
+    const editPay = target.closest('[data-edit-payment]');
+    if (editPay) { editPayment(editPay.dataset.editPayment); return; }
+    const cancelPay = target.closest('[data-cancel-payment]');
+    if (cancelPay && confirm('ยืนยันยกเลิกการชำระเงินนี้โดยไม่ลบประวัติ?')) { cancelPayment(cancelPay.dataset.cancelPayment); return; }
+    const receipt = target.closest('[data-receipt]');
+    if (receipt) { receiptViewPaymentId = receipt.dataset.receipt; render(); setTimeout(()=>document.querySelector('.receipt-sheet')?.scrollIntoView({behavior:'smooth'}), 0); return; }
     if (target.closest('[data-add]')) {
       documentForm.items.push({ productId: '', description: '', quantity: 1, unit: '', unitPrice: 0, discount: 0 });
       render();
@@ -717,6 +797,16 @@ function bindEvents() {
       scheduleRender();
       return;
     }
+    if (target.matches('[data-payment-search]')) {
+      paymentQuery = target.value;
+      scheduleRender();
+      return;
+    }
+    if (target.matches('[data-payment-field]')) {
+      paymentForm[target.dataset.paymentField] = target.type === 'number' ? target.value : target.value;
+      paymentErrors = { ...paymentErrors, [target.dataset.paymentField]: '' };
+      return;
+    }
     if (target.matches('[data-prefix-field]')) {
       documentStore.prefixes[target.dataset.prefixField] = target.value.trim().toUpperCase();
       saveDocumentStore();
@@ -765,6 +855,11 @@ function bindEvents() {
     }
     if (target.matches('[data-document-status-filter]')) { documentStatusFilter = target.value; render(); return; }
     if (target.matches('[data-document-sort]')) { documentSort = target.value; render(); return; }
+    if (target.matches('[data-payment-method-filter]')) { paymentMethodFilter = target.value; render(); return; }
+    if (target.matches('[data-payment-status-filter]')) { paymentStatusFilter = target.value; render(); return; }
+    if (target.matches('[data-payment-date-filter]')) { paymentDateFilter = target.value; render(); return; }
+    if (target.matches('[data-payment-customer-filter]')) { paymentCustomerFilter = target.value; render(); return; }
+    if (target.matches('[data-payment-field]')) { paymentForm[target.dataset.paymentField] = target.value; return; }
     if (target.matches('[data-category-filter]')) {
       categoryFilter = target.value;
       render();
@@ -802,6 +897,11 @@ function bindEvents() {
     if (!form) return;
     if (form.matches('[data-company-form]')) {
       e.preventDefault();
+      return;
+    }
+    if (form.matches('[data-payment-form]')) {
+      e.preventDefault();
+      savePayment();
       return;
     }
     if (form.matches('[data-customer-form]')) {
