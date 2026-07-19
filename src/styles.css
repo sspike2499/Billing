@@ -136,3 +136,19 @@ textarea { width: 100%; min-height: 86px; resize: vertical; border: 1px solid #d
 .edit-control button { padding: 8px 10px; border-radius: 10px; font-weight: 800; }
 @media (max-width: 980px) { .document-manager .inventory-tools, .document-text { grid-template-columns: 1fr; } }
 @media print { .document-manager, .edit-control, .toolbar, .doc-message { display: none !important; } select, textarea { border: 0; padding: 0; appearance: none; resize: none; } .form-grid { grid-template-columns: repeat(4, 1fr); } }
+.payment-panel { margin-top: 24px; padding-top: 20px; border-top: 1px solid var(--line); }
+.payment-form { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 14px; padding: 16px; border: 1px solid var(--line); border-radius: 18px; background: #fffaf7; }
+.payment-form .wide { grid-column: span 2; }
+.payment-history { display: grid; gap: 10px; margin-top: 16px; }
+.payment-history h3 { margin: 0; color: var(--navy); }
+.payment-row { display: grid; grid-template-columns: 1fr auto auto auto auto auto auto; gap: 10px; align-items: center; padding: 12px; border: 1px solid var(--line); border-radius: 16px; background: #fff; }
+.payment-row span, .payment-row small { display: block; color: var(--muted); }
+.payment-row em { padding: 4px 10px; border-radius: 999px; background: #dcfce7; color: #166534; font-style: normal; font-weight: 800; }
+.payment-row.cancelled { opacity: .72; background: #f8fafc; }
+.payment-row.cancelled em { background: #fee2e2; color: #991b1b; }
+.payment-row button, .receipt-controls button { padding: 8px 10px; border-radius: 10px; background: #f1e4df; color: var(--burgundy); font-weight: 800; }
+.payment-management { max-width: 1440px; margin: 0 auto 24px; }
+.payment-tools { grid-template-columns: 1fr 160px 150px 180px 220px; }
+.receipt-sheet { max-width: 960px; margin: 0 auto 24px; }
+@media (max-width: 980px) { .payment-form, .payment-tools, .payment-row { grid-template-columns: 1fr; } .payment-form .wide { grid-column: auto; } }
+@media print { .payment-panel .form-actions, .payment-form, .payment-management, .receipt-controls, .payment-row button { display: none !important; } .receipt-sheet { display: block !important; box-shadow: none; border: 0; } }
